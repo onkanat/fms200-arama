@@ -92,10 +92,13 @@ def _collect_doc_pages(doc_dir):
 
 
 def _collect_images(doc_dir):
-    """Klasördeki sayfa görsellerini {sayfa_no: yol} olarak toplar (metinsiz şemalar dahil)."""
+    """Klasördeki sayfa görsellerini {sayfa_no: yol} olarak toplar (metinsiz şemalar dahil).
+
+    Görseller {sayfalar,semalar,jpg} alt klasöründe VEYA doğrudan doc_dir içinde olabilir.
+    """
     imgs = {}
-    for sub in ("sayfalar", "semalar", "jpg"):
-        d = os.path.join(doc_dir, sub)
+    subdirler = [os.path.join(doc_dir, s) for s in ("sayfalar", "semalar", "jpg")] + [doc_dir]
+    for d in subdirler:
         if not os.path.isdir(d):
             continue
         for f in sorted(os.listdir(d)):
@@ -137,6 +140,25 @@ def _iter_units(root):
             txt = open(f, encoding="utf-8", errors="replace").read()
             if txt.strip():
                 yield "katalog", None, txt, f, None
+        # dokuman/ kökündeki başıboş görseller (HowToOrder vb.)
+        for f in sorted(glob.glob(os.path.join(dok, "*.jpg")) + glob.glob(os.path.join(dok, "*.png"))):
+            yield os.path.splitext(os.path.basename(f))[0], None, "", f, f
+    # mekanik çizimler (metinsiz — yalnız hızlı erişim için görsel olarak indekslenir)
+    for d in sorted(glob.glob(os.path.join(root, "mekanik", "*"))):
+        if not os.path.isdir(d):
+            continue
+        doc = "Mekanik_" + os.path.basename(d)
+        # görseller alt klasörde OLABİLİR ya da doğrudan bu klasörde
+        imgs = {}
+        for sub in (d, os.path.join(d, "sayfalar"), os.path.join(d, "jpg")):
+            for f in sorted(glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))):
+                pn = _page_no(os.path.basename(f)) or (len(imgs) + 1)
+                imgs.setdefault(pn, f)
+        for pn, img in sorted(imgs.items()):
+            yield doc, pn, "", None, img
+    # kök düzeyindeki tekil görseller (mekanik/HowToOrder vb.)
+    for f in sorted(glob.glob(os.path.join(root, "mekanik", "*.jpg"))):
+        yield os.path.splitext(os.path.basename(f))[0], None, "", f, f
     # yazilim/*.txt + README
     for pat in ("yazilim/*.txt", "README.md"):
         for f in sorted(glob.glob(os.path.join(root, pat))):
