@@ -23,10 +23,16 @@
      border-radius:8px;padding:12px;font-size:13px;max-height:46vh;overflow:auto}
  #stat{color:var(--mut);font-size:12.5px}
  .bos{color:var(--mut);padding:16px}
-</style></head><body>
-<header>
-  <input id="q" type="search" placeholder="Ara…  (ör: GRAFCET, rodamiento, PLC programlama)" autofocus>
-  <select id="lang">
+ .baslik{padding:10px 14px;color:var(--mut);font-size:13px;border-bottom:1px solid var(--br)}
+ .izgara{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;padding:10px}
+ .kart{border:1px solid var(--br);border-radius:8px;overflow:hidden;cursor:pointer;background:#12151b}
+ .kart:hover{border-color:var(--acc)} .kart.sel{border-color:var(--acc);box-shadow:0 0 0 2px #1d3a5c}
+ .kart img{width:100%;display:block;background:#fff}
+ .meta2{display:flex;gap:5px;padding:4px 6px;flex-wrap:wrap;font-size:11px}
+ </style></head><body>
+ <header>
+   <input id="q" type="search" placeholder="Ara…  (ör: GRAFCET, rodamiento, PLC programlama)" autofocus>
+   <select id="lang">
     <option value="">Tüm diller</option><option>tr</option><option>en</option>
     <option>es</option><option>de</option><option>fr</option>
   </select>
@@ -35,6 +41,7 @@
     <option value="semantic">Anlam</option>
   </select>
   <button id="go">Ara</button>
+  <select id="docsel" title="Belgeye gözat (şemalar dahil)"><option value="">📄 Belge gözat…</option></select>
   <span id="stat"></span>
 </header>
 <main>
@@ -44,6 +51,36 @@
 <script>
 const $ = s => document.querySelector(s);
 const esc = t => (t||"").replace(/[<>&]/g, m => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[m]));
+
+// Belge listesini doldur (şema gözatma için)
+async function belgeleriYukle(){
+  try{
+    const r = await fetch("/api/docs").then(x=>x.json());
+    const seen = new Set(); let html = '<option value="">📄 Belge gözat…</option>';
+    for(const d of r.docs){
+      if(seen.has(d.doc)) continue; seen.add(d.doc);
+      html += `<option value="${esc(d.doc)}">${esc(d.doc)}</option>`;
+    }
+    $("#docsel").innerHTML = html;
+  }catch(e){}
+}
+
+// Bir dokümanın tüm sayfalarını ızgara olarak göster (metin + şema görselleri)
+async function belgeAc(doc){
+  const r = await fetch(`/api/doc_pages?doc=${encodeURIComponent(doc)}`).then(x=>x.json());
+  const kartlar = r.pages.map(p=>`
+    <div class="kart" data-doc="${esc(doc)}" data-page="${p.page ?? ''}">
+      ${p.image_url?`<img src="${p.image_url}" loading="lazy" alt="sayfa ${p.page}">`:''}
+      <div class="meta2"><span class="tag">${p.page!=null?('s.'+p.page):'belge'}</span>
+        <span class="tag">${p.lang||'??'}</span>${p.tlen?'<span class="tag">metin</span>':''}</div>
+    </div>`).join('');
+  $("#list").innerHTML = `<div class="baslik">${esc(doc)} · ${r.pages.length} sayfa</div>` +
+    `<div class="izgara">${kartlar}</div>`;
+  document.querySelectorAll(".kart").forEach(c=>c.onclick=()=>{
+    document.querySelectorAll(".kart").forEach(k=>k.classList.remove("sel"));
+    c.classList.add("sel"); ac(c.dataset.doc, c.dataset.page);
+  });
+}
 
 async function ara(){
   const q = $("#q").value.trim(), lang = $("#lang").value, mode = $("#mode").value;
@@ -80,5 +117,14 @@ async function ac(doc, page){
 
 $("#q").addEventListener("keydown", e=>{ if(e.key==="Enter") ara(); });
 $("#go").onclick = ara; $("#lang").onchange = ara; $("#mode").onchange = ara;
-ara();
+$("#docsel").onchange = e => { if(e.target.value) belgeAc(e.target.value); };
+belgeleriYukle();
+// derin bağlantı: ?q=... &lang=... &mode=...
+(() => {
+  const u = new URLSearchParams(location.search);
+  if (u.get("q")) $("#q").value = u.get("q");
+  if (u.get("lang")) $("#lang").value = u.get("lang");
+  if (u.get("mode")) $("#mode").value = u.get("mode");
+})();
+if ($("#q").value.trim()) ara();
 </script></body></html>

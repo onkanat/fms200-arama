@@ -72,3 +72,17 @@ def api_docs():
     rows = con.execute("SELECT doc, lang, COUNT(*) c FROM pages GROUP BY doc, lang ORDER BY doc").fetchall()
     con.close()
     return {"docs": [{"doc": r[0], "lang": r[1], "count": r[2]} for r in rows]}
+
+
+@app.get("/api/doc_pages")
+def api_doc_pages(doc: str):
+    """Bir dokümanın tüm sayfalarını (metin/görsel) listeler — şema gözatma için."""
+    con = sqlite3.connect(DB)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT page, lang, image_path, length(text) AS tlen FROM pages"
+        " WHERE doc=? ORDER BY (page IS NULL), page", (doc,)).fetchall()
+    con.close()
+    return {"doc": doc, "pages": [
+        {"page": r["page"], "lang": r["lang"], "tlen": r["tlen"],
+         "image_url": f"/api/file?p={r['image_path']}" if r["image_path"] else None} for r in rows]}
