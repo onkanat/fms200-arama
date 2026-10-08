@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FMS-200 Arama</title>
+<style>
+ :root{--bg:#0f1115;--p:#181b22;--fg:#e6e6e6;--mut:#8a93a6;--acc:#4ea1ff;--br:#2a2f3a}
+ *{box-sizing:border-box} body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+   background:var(--bg);color:var(--fg);height:100vh;display:flex;flex-direction:column}
+ header{padding:12px 16px;border-bottom:1px solid var(--br);background:var(--p);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ input[type=search],select{background:#0d0f13;color:var(--fg);border:1px solid var(--br);border-radius:8px;padding:9px 12px;font-size:15px}
+ input[type=search]{flex:1;min-width:240px}
+ button{background:var(--acc);border:0;color:#04121f;font-weight:600;border-radius:8px;padding:9px 16px;cursor:pointer}
+ main{flex:1;display:grid;grid-template-columns:minmax(340px,42%) 1fr;overflow:hidden}
+ #list{overflow:auto;border-right:1px solid var(--br)}
+ .card{padding:11px 14px;border-bottom:1px solid var(--br);cursor:pointer}
+ .card:hover{background:#161a22} .card.sel{background:#12233a}
+ .meta{color:var(--mut);font-size:12.5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ .tag{background:#222833;border-radius:5px;padding:1px 6px;color:#b9c4d6}
+ .snip{color:#cfd6e4;margin-top:4px;font-size:13.5px}
+ #view{overflow:auto;padding:16px;display:grid;grid-template-columns:1fr;gap:14px;align-content:start}
+ #view img{max-width:100%;border:1px solid var(--br);border-radius:8px;background:#fff}
+ pre{white-space:pre-wrap;word-break:break-word;background:#0d0f13;border:1px solid var(--br);
+     border-radius:8px;padding:12px;font-size:13px;max-height:46vh;overflow:auto}
+ #stat{color:var(--mut);font-size:12.5px}
+ .bos{color:var(--mut);padding:16px}
+</style></head><body>
+<header>
+  <input id="q" type="search" placeholder="Ara…  (ör: GRAFCET, rodamiento, PLC programlama)" autofocus>
+  <select id="lang">
+    <option value="">Tüm diller</option><option>tr</option><option>en</option>
+    <option>es</option><option>de</option><option>fr</option>
+  </select>
+  <select id="mode">
+    <option value="hybrid">Hibrit</option><option value="lexical">Tam metin</option>
+    <option value="semantic">Anlam</option>
+  </select>
+  <button id="go">Ara</button>
+  <span id="stat"></span>
+</header>
+<main>
+  <div id="list"></div>
+  <div id="view"><div class="bos">Sonuca tıkla → sayfa metni + görseli burada görünür.</div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = t => (t||"").replace(/[<>&]/g, m => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[m]));
+
+async function ara(){
+  const q = $("#q").value.trim(), lang = $("#lang").value, mode = $("#mode").value;
+  if(!q){ $("#list").innerHTML=""; $("#stat").textContent=""; return; }
+  const t0 = performance.now();
+  const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&lang=${lang}&mode=${mode}&limit=60`).then(x=>x.json());
+  const ms = Math.round(performance.now()-t0);
+  $("#stat").textContent = `${r.count} sonuç · ${ms} ms`;
+  if(!r.count){ $("#list").innerHTML = '<div class="bos">Sonuç yok.</div>'; return; }
+  $("#list").innerHTML = r.results.map((x,i)=>`
+    <div class="card" data-doc="${esc(x.doc)}" data-page="${x.page ?? ''}">
+      <div class="meta"><span class="tag">${esc(x.doc)}</span>
+        <span>${x.page!=null?('s.'+x.page):(x.kind==='doc'?'belge':'')}</span>
+        <span class="tag">${x.lang||'??'}</span>${x.has_image?'<span class="tag">🖼</span>':''}</div>
+      <div class="snip">${esc((x.snippet||'').slice(0,220))||'<i style="color:#8a93a6">(eşleşme özeti yok)</i>'}</div>
+    </div>`).join('');
+  document.querySelectorAll(".card").forEach(c=>c.onclick=()=>{
+    document.querySelectorAll(".card").forEach(k=>k.classList.remove("sel"));
+    c.classList.add("sel");
+    ac(c.dataset.doc, c.dataset.page);
+  });
+}
+
+async function ac(doc, page){
+  const p = page ? `&page=${page}` : "";
+  const r = await fetch(`/api/page?doc=${encodeURIComponent(doc)}${p}`).then(x=>x.json());
+  $("#view").innerHTML = `
+    <div class="meta"><span class="tag">${esc(r.doc)}</span>
+      <span class="tag">${r.lang||'??'}</span>
+      ${r.page!=null?'<span class="tag">s.'+r.page+'</span>':''}</div>
+    ${r.image_url?`<img src="${r.image_url}" loading="lazy" alt="sayfa görseli">`:''}
+    <pre>${esc(r.text||'')}</pre>`;
+}
+
+$("#q").addEventListener("keydown", e=>{ if(e.key==="Enter") ara(); });
+$("#go").onclick = ara; $("#lang").onchange = ara; $("#mode").onchange = ara;
+ara();
+</script></body></html>

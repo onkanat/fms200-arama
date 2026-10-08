@@ -1,0 +1,29 @@
+[project]
+name = "fms200-arama"
+version = "0.1.0"
+description = "SMC FMS-200 dokümantasyon arşivi için yerel hibrit arama (SQLite FTS5 + vektör, RRF) + Türkçe web arayüzü"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Hakan Kılıçaslan" }]
+keywords = ["fms-200", "smc", "search", "fts5", "sqlite", "ocr", "automation-training"]
+
+dependencies = []
+
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+fms200-arama = "fms200_arama.search:_cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fms200_arama"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
