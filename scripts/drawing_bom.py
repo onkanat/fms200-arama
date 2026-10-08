@@ -81,6 +81,24 @@ def strip_layout(t: str) -> str:
     return _anti_loop(_ETIKET.sub("", _LAYOUT.sub("", t or ""))).strip()
 
 
+def _birlestir(a: str, b: str) -> str:
+    """İki OCR çıktısını satır bazında birleştir (a önce, b'de yeni olanlar sonra).
+
+    ÖLÇÜM (sayfa_150 sol kolon): düz yön 'Corea dencado' (yanlış), 90° saat yönü
+    'Correa dentada' (doğru) + düzün kaçırdığı '(4x) Tornillo DIN 912 M4x35 Cinc.'
+    satırını verdi. İki yön birbirini tamamlar -> birleştirmek geri çağırmayı artırır.
+    """
+    sa = [l.strip() for l in a.split("\n") if l.strip()]
+    sb = [l.strip() for l in b.split("\n") if l.strip()]
+    gor = set(l.lower() for l in sa)
+    out = list(sa)
+    for l in sb:
+        if l.lower() not in gor:
+            out.append(l)
+            gor.add(l.lower())
+    return "\n".join(out)
+
+
 def _ocr_png(png_bytes: bytes, timeout: int = 400) -> str:
     b64 = base64.b64encode(png_bytes).decode()
     pl = {"model": MODEL, "prompt": PROMPT, "images": [b64], "stream": False,
@@ -114,6 +132,7 @@ def main():
     from PIL import Image
 
     resample = getattr(Image, "Resampling", Image).LANCZOS
+    rot270 = getattr(Image, "Transpose", Image).ROTATE_270
 
     os.makedirs(a.out, exist_ok=True)
     fs = sorted(f for f in os.listdir(a.src) if f.lower().endswith((".jpg", ".jpeg", ".png")))
@@ -136,8 +155,13 @@ def main():
         parcalar = []
         for ad, box in bolgeler:
             c = im.crop(box)
-            c = c.resize((c.width * a.scale, c.height * a.scale), resample)
-            t = strip_layout(_ocr_png(_png(c)))
+            c2 = c.resize((c.width * a.scale, c.height * a.scale), resample)
+            t = strip_layout(_ocr_png(_png(c2)))
+            if len(t) < 15:
+                c2 = c.transpose(rot270)   # 90° CW: dikey metin düzelir
+                c2 = c2.resize((c2.width * a.scale, c2.height * a.scale), resample)
+                t2 = strip_layout(_ocr_png(_png(c2)))
+                t = _birlestir(t, t2)
             if t and len(t) > 15:
                 parcalar.append(f"--- {ad} ---\n{t}")
         if parcalar:
