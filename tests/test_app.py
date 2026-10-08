@@ -51,3 +51,22 @@ def test_api_page_yok_404(client):
 def test_api_file(client):
     r = client.get("/api/file", params={"p": "dokuman/FMS200_Z/sayfalar/sayfa_001.jpg"})
     assert r.status_code == 200
+
+
+def test_api_file_traversal_engellenir(client):
+    """Klasör dışına çıkma (../../) reddedilmeli."""
+    r = client.get("/api/file", params={"p": "../../../etc/passwd"})
+    assert r.status_code == 404
+
+
+def test_api_doc_pages(client):
+    r = client.get("/api/doc_pages", params={"doc": "FMS200_Z"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["doc"] == "FMS200_Z" and len(j["pages"]) == 1
+    assert j["pages"][0]["image_url"].startswith("/api/file?p=")
+
+
+def test_api_docs(client):
+    j = client.get("/api/docs").json()
+    assert any(d["doc"] == "FMS200_Z" for d in j["docs"])
