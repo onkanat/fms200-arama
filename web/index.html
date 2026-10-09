@@ -45,6 +45,13 @@
  .kart:hover{border-color:var(--acc)} .kart.sel{border-color:var(--acc);box-shadow:0 0 0 2px #1d3a5c}
  .kart img{width:100%;display:block;background:#fff}
  .meta2{display:flex;gap:5px;padding:4px 6px;flex-wrap:wrap;font-size:11px}
+ /* etiket çubuğu (view altı, sabit) */
+ #labelbar{display:flex;gap:8px;align-items:center;padding:10px 16px;border-top:1px solid var(--br);background:var(--p)}
+ #labelbar input{flex:1;background:#0d0f13;color:var(--fg);border:1px solid var(--br);border-radius:8px;padding:9px 12px;font-size:14px}
+ #labelbar button{background:#2a6f4e;color:#eafff4}
+ #labelbar .durum{color:var(--mut);font-size:12px;white-space:nowrap}
+ #reindex{background:#3a2f1a;color:#ffe6b3;border:1px solid #5a4a2a;border-radius:8px;padding:6px 10px;font-size:12.5px;cursor:pointer}
+ body{display:grid;grid-template-rows:auto 1fr auto;height:100vh}
  </style></head><body>
  <header>
    <input id="q" type="search" placeholder="Ara…  (ör: GRAFCET, rodamiento, PLC programlama)" autofocus>
@@ -59,11 +66,17 @@
   <button id="go">Ara</button>
   <select id="docsel" title="Belgeye gözat (şemalar dahil)"><option value="">📄 Belge gözat…</option></select>
   <span id="stat"></span>
-</header>
-<main>
-  <div id="list"></div>
-  <div id="view"><div class="bos">Sonuca tıkla → sayfa metni + görseli burada görünür.</div></div>
-</main>
+  <button id="reindex" title="Arşivi yeniden indeksle">⟳ İndeks</button>
+ </header>
+ <main>
+   <div id="list"></div>
+   <div id="view"><div class="bos">Sonuca tıkla → sayfa metni + görseli burada görünür.</div></div>
+ </main>
+ <div id="labelbar">
+   <span class="durum" id="lblinfo">—</span>
+   <input id="lbl" type="text" placeholder="Bu görsel/sayfa için etiket yaz (ör: 'FMS-203 hidrolik pres kısmı, terminal X3')…" disabled>
+   <button id="lblsave" disabled>Etiketle</button>
+ </div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = t => (t||"").replace(/[<>&]/g, m => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[m]));
@@ -127,10 +140,51 @@ async function ac(doc, page){
   $("#view").innerHTML = `
     <div class="meta"><span class="tag">${esc(r.doc)}</span>
       <span class="tag">${r.lang||'??'}</span>
-      ${r.page!=null?'<span class="tag">s.'+r.page+'</span>':''}</div>
+      ${r.page!=null?'<span class="tag">s.'+r.page+'</span>':''}${r.label?'<span class="tag" style="background:#2a6f4e;color:#eafff4">🏷 '+esc(r.label)+'</span>':''}</div>
     ${r.image_url?`<img src="${r.image_url}" loading="lazy" alt="sayfa görseli">`:''}
     ${govde}`;
+  // etiket çubuğunu bu sayfaya bağla
+  seciliDoc = r.doc; seciliPage = r.page;
+  $("#lbl").disabled = false; $("#lblsave").disabled = false;
+  $("#lbl").value = r.label || "";
+  $("#lblinfo").textContent = "🏷 " + r.doc + (r.page!=null?(" s."+r.page):"");
+  $("#lbl").placeholder = r.image_url ? "Görsel etiketi (ör: 'X3 terminal şeması')…" : "Metin etiketi…";
 }
+
+// ---- etiket kaydet ----
+let seciliDoc = null, seciliPage = null;
+async function etiketKaydet(){
+  const label = $("#lbl").value.trim();
+  if(!seciliDoc || !label) return;
+  $("#lblsave").disabled = true; $("#lblinfo").textContent = "kaydediliyor…";
+  try{
+    const r = await fetch("/api/label", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({doc: seciliDoc, page: seciliPage, label})}).then(x=>x.json());
+    $("#lblinfo").textContent = r.ok ? ("✅ etiket kaydedildi — aramada bulunur") : "hata";
+    // FTS anında güncellendi; aramayı tazele
+  }catch(e){ $("#lblinfo").textContent = "hata: "+e; }
+  $("#lblsave").disabled = false;
+}
+$("#lblsave").onclick = etiketKaydet;
+$("#lbl").addEventListener("keydown", e=>{ if(e.key==="Enter") etiketKaydet(); });
+
+// ---- indeks durumu / yeniden indeksle ----
+async function durumYukle(){
+  try{
+    const s = await fetch("/api/status").then(x=>x.json());
+    const tag = s.bayat ? `<span style="color:#ffce6a">⚠ bayat</span>` : `✔`;
+    $("#stat").innerHTML = `${s.kayit} kayıt · embed:${s.embed}${s.model?(" ("+s.model+")"):""} ${tag}`;
+  }catch(e){}
+}
+$("#reindex").onclick = async () => {
+  $("#reindex").disabled = true; $("#stat").textContent = "⟳ indeksleniyor…";
+  try{
+    const r = await fetch("/api/reindex", {method:"POST"}).then(x=>x.json());
+    $("#stat").textContent = r.ok ? `✅ ${r.kayit} kayıt` : "hata";
+    belgeleriYukle();
+  }catch(e){ $("#stat").textContent = "hata"; }
+  $("#reindex").disabled = false;
+};
 
 $("#q").addEventListener("keydown", e=>{ if(e.key==="Enter") ara(); });
 $("#go").onclick = ara; $("#lang").onchange = ara; $("#mode").onchange = ara;
@@ -144,4 +198,5 @@ belgeleriYukle();
   if (u.get("mode")) $("#mode").value = u.get("mode");
 })();
 if ($("#q").value.trim()) ara();
+durumYukle();
 </script></body></html>

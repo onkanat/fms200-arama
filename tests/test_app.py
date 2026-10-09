@@ -86,3 +86,22 @@ def test_md_render(client, tmp_path):
     # .md dosyasi olmayan normal sayfa -> html null, text dolu
     r2 = client.get("/api/page", params={"doc": "FMS200_Z", "page": 1})
     assert r2.json()["html"] is None and "GRAFCET" in r2.json()["text"]
+
+
+def test_api_status(client):
+    j = client.get("/api/status").json()
+    assert j["kayit"] >= 1 and "embed" in j and "bayat" in j
+
+
+def test_api_label_ve_arama(client):
+    """Etiket kaydi hem label alanina yazilir hem FTS'e eklenir (aramada bulunur)."""
+    r = client.post("/api/label", json={"doc": "FMS200_Z", "page": 1, "label": "ozel etiket zebra"})
+    assert r.status_code == 200 and r.json()["ok"]
+    p = client.get("/api/page", params={"doc": "FMS200_Z", "page": 1}).json()
+    assert p["label"] == "ozel etiket zebra"
+    s = client.get("/api/search", params={"q": "zebra", "mode": "lexical"}).json()
+    assert s["count"] >= 1
+
+
+def test_api_label_eksik_400(client):
+    assert client.post("/api/label", json={"doc": "FMS200_Z"}).status_code == 400

@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fms200_arama.norm import norm, detect_lang  # noqa: E402
+from fms200_arama import vec as _vec  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DDL = """
@@ -31,12 +32,15 @@ CREATE TABLE IF NOT EXISTS pages(
   kind       TEXT,
   src_path   TEXT,
   image_path TEXT,
-  text       TEXT
+  text       TEXT,
+  vector     BLOB,
+  label      TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
   normtext,
   tokenize='unicode61 remove_diacritics 2'
 );
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE INDEX IF NOT EXISTS idx_pages_doc ON pages(doc);
 CREATE INDEX IF NOT EXISTS idx_pages_lang ON pages(lang);
 """
@@ -174,21 +178,65 @@ def _iter_units(root):
             yield "yazilim", None, txt, f, None
 
 
-def build(root, db, verbose=True):
+def build(root, db, verbose=True, do_embed=True):
     root = os.path.abspath(root)
     os.makedirs(os.path.dirname(os.path.abspath(db)) or ".", exist_ok=True)
     con = sqlite3.connect(db)
     con.executescript(DDL)
+    # şema göçü: eski DB'de vector/label kolonu yoksa ekle
+    kolonlar = [r[1] for r in con.execute("PRAGMA table_info(pages)")]
+    if "vector" not in kolonlar:
+        con.execute("ALTER TABLE pages ADD COLUMN vector BLOB")
+    if "label" not in kolonlar:
+        con.execute("ALTER TABLE pages ADD COLUMN label TEXT")
     con.execute("DELETE FROM pages")
     con.execute("DELETE FROM pages_fts")
     con.commit()
-    n = 0
+
+    # embedding arka ucu (bir kez belirle: tüm vektörler aynı arka uçla üretilmeli)
+    backend, model, dim = ("hashing", "", _vec.DIM)
+    if do_embed:
+        try:
+            backend, model, dim = _vec.backend_info()
+        except Exception:
+            backend = "hashing"
+    con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('embed_backend',?)", (backend,))
+    con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('embed_model',?)", (model,))
+    con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('embed_dim',?)", (str(dim),))
+
+    # önce tüm kayıtları topla, sonra toplu vektör çıkar
+    kayitlar = []
     for doc, page, txt, src, img in _iter_units(root):
+        kayitlar.append((doc, page, txt, src, img))
+    # etiket metni varsa onu (daha temiz bağlam), yoksa sayfa metnini göm
+    etiketler = _etiketleri_oku(con)
+    texts = [_embed_metni(etiketler.get((doc, page)), doc, page, txt)
+             for (doc, page, txt, src, img) in kayitlar]
+
+    vecs = [None] * len(kayitlar)
+    if do_embed and any(t.strip() for t in texts):
+        B = 24
+        for i in range(0, len(texts), B):
+            parca = texts[i:i + B]
+            parca = [t if t.strip() else " " for t in parca]
+            try:
+                vs = _vec.embed_batch(parca, backend=backend)
+            except Exception:
+                # sunucu düştü → hashing'e geç (tutarlılık için tümü hashing yapılır)
+                backend = "hashing"
+                con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('embed_backend','hashing')")
+                vs = _vec.embed_batch(parca, backend="hashing")
+            for j, v in enumerate(vs):
+                vecs[i + j] = _vec.to_blob(v)
+
+    n = 0
+    for (doc, page, txt, src, img), vec in zip(kayitlar, vecs):
         cur = con.execute(
-            "INSERT INTO pages(doc,page,lang,kind,src_path,image_path,text) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO pages(doc,page,lang,kind,src_path,image_path,text,vector,label) VALUES(?,?,?,?,?,?,?,?,?)",
             (doc, page, detect_lang(txt), "page" if page is not None else "doc",
              os.path.relpath(src, root) if src else None,
-             os.path.relpath(img, root) if img else None, txt),
+             os.path.relpath(img, root) if img else None, txt, vec,
+             etiketler.get((doc, page))),
         )
         con.execute("INSERT INTO pages_fts(rowid, normtext) VALUES(?,?)", (cur.lastrowid, norm(txt)))
         n += 1
@@ -197,8 +245,29 @@ def build(root, db, verbose=True):
     con.commit()
     con.close()
     if verbose:
-        print(f"indeks: {n} kayit -> {db}")
+        print(f"indeks: {n} kayit -> {db} | embed={backend}"
+              + (f" ({model}, {dim}-dim)" if backend == "server" else ""))
     return n
+
+
+def _etiketleri_oku(con):
+    """pages(label) doluysa {(doc,page): label} — yeniden indekslemede etiketleri korur."""
+    out = {}
+    try:
+        for doc, page, lb in con.execute("SELECT doc,page,label FROM pages WHERE label IS NOT NULL AND label<>''"):
+            out[(doc, page)] = lb
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def _embed_metni(etiket, doc, page, txt):
+    """Gömülecek metin: elle etiket varsa etiket + sayfa metni başlığı, yoksa sayfa metni."""
+    parts = [etiket or "", doc.replace("_", " ")]
+    if page is not None:
+        parts.append(f"sayfa {page}")
+    parts.append((txt or "")[:1800])
+    return "\n".join(p for p in parts if p)
 
 
 if __name__ == "__main__":

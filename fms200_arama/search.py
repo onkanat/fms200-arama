@@ -10,7 +10,7 @@ import re
 import sqlite3
 
 from .norm import norm
-from .vec import embed, cosine
+from .vec import embed_batch, cosine, from_blob
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(HERE, "..", "data", "fms200.db")
@@ -55,16 +55,35 @@ def _lexical(con, fts_q, lang, doc, limit):
 
 
 def _semantic(con, q, lang, doc, pool):
+    """Sorguyu DB'deki vektörlerle karşılaştırır (vektörler DB'de saklı)."""
     wsql, args = _where(lang, doc)
-    sql = "SELECT id,doc,page,lang,kind,src_path,image_path,text FROM pages"
+    sql = "SELECT id,vector FROM pages"
     if wsql:
         sql += " WHERE " + wsql
     rows = con.execute(sql, args).fetchall()
-    qv = embed(q)
-    scored = [(cosine(qv, embed(r[7][:2000])), r[0]) for r in rows]
-    scored = [s for s in scored if s[0] > 0]
+    backend = _meta(con, "embed_backend", "hashing")
+    try:
+        qv = embed_batch([q], backend=backend)[0]
+    except Exception:
+        qv = embed_batch([q], backend="hashing")[0]
+        backend = "hashing"
+    scored = []
+    for rid, blob in rows:
+        if not blob:
+            continue
+        s = cosine(qv, from_blob(blob))
+        if s > 0:
+            scored.append((s, rid))
     scored.sort(reverse=True)
     return [rid for _, rid in scored[:pool]]
+
+
+def _meta(con, k, default=None):
+    try:
+        r = con.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+        return r[0] if r else default
+    except sqlite3.Error:
+        return default
 
 
 def search(q, db=DEFAULT_DB, limit=20, lang=None, doc=None, mode="hybrid"):

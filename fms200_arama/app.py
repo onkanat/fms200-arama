@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import search as se
+from . import build_index as _bi
 
 try:                      # markdown render (opsiyonel: yoksa düz metin döner)
     import markdown as _md
@@ -72,7 +73,76 @@ def api_page(doc: str, page: int | None = None):
         raise HTTPException(404, "sayfa bulunamadı")
     return {"doc": row["doc"], "page": row["page"], "lang": row["lang"], "text": row["text"],
             "html": _markdown_renderle(row["doc"], row["text"]),
+            "label": row["label"] if "label" in row.keys() else None,
             "image_url": f"/api/file?p={row['image_path']}" if row["image_path"] else None}
+
+
+@app.get("/api/status")
+def api_status():
+    """İndeks durumu: arka uç, kayıt sayısı, DB yaşı."""
+    con = sqlite3.connect(DB)
+    n = con.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+    lbl = con.execute("SELECT COUNT(*) FROM pages WHERE label IS NOT NULL AND label<>''").fetchone()[0]
+    meta = {k: v for k, v in con.execute("SELECT k,v FROM meta").fetchall()} if _has_meta(con) else {}
+    con.close()
+    db_mtime = os.path.getmtime(DB)
+    arsiv_mtime = _en_yeni_mtime(_root())
+    return {"kayit": n, "etiketli": lbl, "embed": meta.get("embed_backend", "?"),
+            "model": meta.get("embed_model", ""), "db": db_mtime,
+            "arsiv_en_yeni": arsiv_mtime, "bayat": arsiv_mtime > db_mtime + 1}
+
+
+@app.post("/api/reindex")
+def api_reindex():
+    """Arşivi yeniden indeksler (arka uç otomatik seçilir)."""
+    try:
+        n = _bi.build(_root(), DB, verbose=False)
+        return {"ok": True, "kayit": n}
+    except Exception as e:
+        raise HTTPException(500, f"indeks hatası: {e}")
+
+
+@app.post("/api/label")
+def api_label(payload: dict):
+    """Sayfa/görsel için etiket kaydeder (arama bu etiketle de bulur)."""
+    doc = (payload.get("doc") or "").strip()
+    label = (payload.get("label") or "").strip()
+    page = payload.get("page")
+    if not doc or not label:
+        raise HTTPException(400, "doc ve label gerekli")
+    con = sqlite3.connect(DB)
+    if page is None:
+        con.execute("UPDATE pages SET label=? WHERE doc=? AND page IS NULL", (label, doc))
+    else:
+        con.execute("UPDATE pages SET label=? WHERE doc=? AND page=?", (label, doc, int(page)))
+    con.commit()
+    # etiket metnini FTS'e de yaz (anında aranabilir olsun)
+    for rid, in con.execute(
+            "SELECT id FROM pages WHERE doc=? AND (? IS NULL OR page=?)", (doc, page, page)).fetchall():
+        con.execute("UPDATE pages_fts SET normtext=normtext||' '||? WHERE rowid=?", (label, rid))
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+def _has_meta(con):
+    return bool(con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone())
+
+
+def _en_yeni_mtime(root):
+    import time
+    yeni = 0.0
+    for d, _, fs in os.walk(root):
+        if "/." in d or "/.venv" in d or "/__pycache__" in d:
+            continue
+        for f in fs:
+            if f.lower().endswith((".md", ".txt", ".jpg", ".jpeg", ".png", ".webp", ".pdf")):
+                try:
+                    yeni = max(yeni, os.path.getmtime(os.path.join(d, f)))
+                except OSError:
+                    pass
+    return yeni
 
 
 @app.get("/api/file")
