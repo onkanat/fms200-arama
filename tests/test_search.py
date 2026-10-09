@@ -85,3 +85,35 @@ def test_lexical_hibrit_kapsar(tmp_path):
     lex = {(x["doc"], x["page"]) for x in se.search("GRAFCET", db=db, mode="lexical")}
     hyb = {(x["doc"], x["page"]) for x in se.search("GRAFCET", db=db, mode="hybrid")}
     assert lex <= hyb
+
+
+def test_en_iyi_en_yuksek_oncelik(tmp_path):
+    """en_iyi/ (kalite_karsilastir cikisi) TUM diger kaynaklardan once gelir."""
+    root = str(tmp_path)
+    d = os.path.join(root, "dokuman", "FMS200_W")
+    for alt in ("en_iyi", "ocr_deepseek", "ocr_deepseek_plain", "ocr_metin", "metin"):
+        os.makedirs(os.path.join(d, alt), exist_ok=True)
+    open(os.path.join(d, "en_iyi", "sayfa_001.txt"), "w", encoding="utf-8").write("KAZANAN en_iyi metni")
+    open(os.path.join(d, "ocr_deepseek", "sayfa_001.txt"), "w", encoding="utf-8").write("deepseek metni")
+    open(os.path.join(d, "ocr_deepseek_plain", "sayfa_001.txt"), "w", encoding="utf-8").write("plain metni")
+    open(os.path.join(d, "ocr_metin", "sayfa_001.txt"), "w", encoding="utf-8").write("tesseract metni")
+    open(os.path.join(d, "metin", "sayfa_001.txt"), "w", encoding="utf-8").write("scribd metni")
+    db = os.path.join(root, "t.db")
+    bi.build(root=root, db=db, verbose=False)
+    con = sqlite3.connect(db)
+    metin = con.execute("SELECT text FROM pages WHERE page=1").fetchone()[0]
+    assert metin == "KAZANAN en_iyi metni"
+
+
+def test_en_iyi_yoksa_deepseek_yedek(tmp_path):
+    """en_iyi/ yoksa (henuz uretilmemis) ocr_deepseek devralir, sonra plain."""
+    root = str(tmp_path)
+    d = os.path.join(root, "dokuman", "FMS200_V")
+    os.makedirs(os.path.join(d, "ocr_deepseek_plain"), exist_ok=True)
+    os.makedirs(os.path.join(d, "ocr_metin"), exist_ok=True)
+    open(os.path.join(d, "ocr_deepseek_plain", "sayfa_001.txt"), "w", encoding="utf-8").write("plain kazandi")
+    open(os.path.join(d, "ocr_metin", "sayfa_001.txt"), "w", encoding="utf-8").write("tesseract")
+    db = os.path.join(root, "t.db")
+    bi.build(root=root, db=db, verbose=False)
+    con = sqlite3.connect(db)
+    assert con.execute("SELECT text FROM pages WHERE page=1").fetchone()[0] == "plain kazandi"

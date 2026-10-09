@@ -2,9 +2,11 @@
 """FMS-200 arşivini tarar, SQLite + FTS5 indeksi kurar.
 
 Metin kaynak önceliği (en iyiden alta):
-  1. ocr_deepseek/   (DeepSeek-OCR — en temiz)
-  2. ocr_metin/      (tesseract)
-  3. metin/sayfa_*.txt (Scribd metin katmanı / harf aralı olabilir)
+  1. en_iyi/          (kalite_karsilastir.py: sayfa-sayfa EN IYI secilmis metin)
+  2. ocr_deepseek/    (DeepSeek-OCR — temiz markdown)
+  3. ocr_deepseek_plain/ (DeepSeek-OCR 'Free OCR' modu)
+  4. ocr_metin/       (tesseract)
+  5. metin/sayfa_*.txt (Scribd metin katmanı / harf aralı olabilir)
 
 Kullanım:
     python -m fms200_arama.build_index --root ../fms-200 --db data/fms200.db
@@ -66,9 +68,11 @@ def _collect_doc_pages(doc_dir):
     pages = {}
     # öncelik: düşük sayı = yüksek öncelik
     kaynaklar = [
-        ("ocr_deepseek", 0),
-        ("ocr_metin", 1),
-        ("metin", 2),
+        ("en_iyi", 0),
+        ("ocr_deepseek", 1),
+        ("ocr_deepseek_plain", 2),
+        ("ocr_metin", 3),
+        ("metin", 4),
     ]
     for sub, pri in kaynaklar:
         d = os.path.join(doc_dir, sub)
