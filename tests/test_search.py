@@ -117,3 +117,16 @@ def test_en_iyi_yoksa_deepseek_yedek(tmp_path):
     bi.build(root=root, db=db, verbose=False)
     con = sqlite3.connect(db)
     assert con.execute("SELECT text FROM pages WHERE page=1").fetchone()[0] == "plain kazandi"
+
+
+def test_kok_markdown_indekslenir(tmp_path):
+    """Kok dizindeki TUM .md dosyalari indekslenir (README ile sinirli degil)."""
+    root = str(tmp_path)
+    open(os.path.join(root, "README.md"), "w", encoding="utf-8").write("# Arsiv README")
+    open(os.path.join(root, "MODUL_LISTESI.md"), "w", encoding="utf-8").write(
+        "# Modul listesi\nFMS-211 Linear transfer\n")
+    db = os.path.join(root, "t.db")
+    bi.build(root=root, db=db, verbose=False)
+    con = sqlite3.connect(db)
+    docs = {r[0] for r in con.execute("SELECT DISTINCT doc FROM pages").fetchall()}
+    assert "MODUL_LISTESI" in docs and "README" in docs

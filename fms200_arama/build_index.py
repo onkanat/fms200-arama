@@ -163,12 +163,15 @@ def _iter_units(root):
     # kök düzeyindeki tekil görseller (mekanik/HowToOrder vb.)
     for f in sorted(glob.glob(os.path.join(root, "mekanik", "*.jpg"))):
         yield os.path.splitext(os.path.basename(f))[0], None, "", f, f
-    # yazilim/*.txt + README
-    for pat in ("yazilim/*.txt", "README.md"):
-        for f in sorted(glob.glob(os.path.join(root, pat))):
-            txt = open(f, encoding="utf-8", errors="replace").read()
-            if txt.strip():
-                yield "yazilim" if "yazilim" in f else "readme", None, txt, f, None
+    # yazilim/*.txt + kök markdown dökümanları (README, MODUL_LISTESI, ...)
+    for f in sorted(glob.glob(os.path.join(root, "*.md"))):
+        txt = open(f, encoding="utf-8", errors="replace").read()
+        if txt.strip():
+            yield os.path.splitext(os.path.basename(f))[0], None, txt, f, None
+    for f in sorted(glob.glob(os.path.join(root, "yazilim", "*.txt"))):
+        txt = open(f, encoding="utf-8", errors="replace").read()
+        if txt.strip():
+            yield "yazilim", None, txt, f, None
 
 
 def build(root, db, verbose=True):
