@@ -11,7 +11,7 @@ keywords = ["fms-200", "smc", "search", "fts5", "sqlite", "ocr", "automation-tra
 dependencies = []
 
 [project.optional-dependencies]
-web = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "markdown>=3.5"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]

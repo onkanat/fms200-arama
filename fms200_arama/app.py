@@ -12,6 +12,11 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from . import search as se
 
+try:                      # markdown render (opsiyonel: yoksa düz metin döner)
+    import markdown as _md
+except ImportError:       # pragma: no cover
+    _md = None
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "MacAir", "fms-200"))  # varsayılan arşiv
 DB = os.path.abspath(os.path.join(HERE, "..", "data", "fms200.db"))
@@ -41,6 +46,19 @@ def api_search(q: str = Query(""), lang: str | None = None, doc: str | None = No
     return {"count": len(out), "results": out}
 
 
+def _markdown_renderle(doc: str, text: str) -> str | None:
+    """Kok .md dökümanlarını HTML'e çevirir; markdown yoksa/başarısızsa None."""
+    if _md is None or not text:
+        return None
+    src = os.path.join(_root(), doc + ".md")
+    if not os.path.exists(src):        # yalnız gerçek bir .md dosyasıysa render et
+        return None
+    try:
+        return _md.markdown(text, extensions=["tables", "fenced_code", "sane_lists", "nl2br"])
+    except Exception:                  # pragma: no cover
+        return None
+
+
 @app.get("/api/page")
 def api_page(doc: str, page: int | None = None):
     con = sqlite3.connect(DB)
@@ -53,6 +71,7 @@ def api_page(doc: str, page: int | None = None):
     if not row:
         raise HTTPException(404, "sayfa bulunamadı")
     return {"doc": row["doc"], "page": row["page"], "lang": row["lang"], "text": row["text"],
+            "html": _markdown_renderle(row["doc"], row["text"]),
             "image_url": f"/api/file?p={row['image_path']}" if row["image_path"] else None}
 
 

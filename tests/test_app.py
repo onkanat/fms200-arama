@@ -70,3 +70,19 @@ def test_api_doc_pages(client):
 def test_api_docs(client):
     j = client.get("/api/docs").json()
     assert any(d["doc"] == "FMS200_Z" for d in j["docs"])
+
+
+def test_md_render(client, tmp_path):
+    """Kök .md dökümanı için /api/page html döndürür (tablo render); düz metin için null."""
+    import os
+    root = os.environ["FMS200_ROOT"]
+    open(os.path.join(root, "NOTLAR.md"), "w", encoding="utf-8").write(
+        "# Baslik\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
+    bi.build(root=root, db=appmod.DB, verbose=False)
+    r = client.get("/api/page", params={"doc": "NOTLAR"})
+    assert r.status_code == 200
+    h = r.json()["html"]
+    assert h and "<h1" in h and "<table" in h and "<td" in h
+    # .md dosyasi olmayan normal sayfa -> html null, text dolu
+    r2 = client.get("/api/page", params={"doc": "FMS200_Z", "page": 1})
+    assert r2.json()["html"] is None and "GRAFCET" in r2.json()["text"]
