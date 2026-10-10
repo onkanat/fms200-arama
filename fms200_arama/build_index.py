@@ -172,6 +172,11 @@ def _iter_units(root):
         txt = open(f, encoding="utf-8", errors="replace").read()
         if txt.strip():
             yield os.path.splitext(os.path.basename(f))[0], None, txt, f, None
+    # durum/*.md — modül durum dossiyeleri (FMS201_DURUM, ...); her biri kendi dokümanı
+    for f in sorted(glob.glob(os.path.join(root, "durum", "*.md"))):
+        txt = open(f, encoding="utf-8", errors="replace").read()
+        if txt.strip():
+            yield os.path.splitext(os.path.basename(f))[0], None, txt, f, None
     for f in sorted(glob.glob(os.path.join(root, "yazilim", "*.txt"))):
         txt = open(f, encoding="utf-8", errors="replace").read()
         if txt.strip():
