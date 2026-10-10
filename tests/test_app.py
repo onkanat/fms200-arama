@@ -105,3 +105,50 @@ def test_api_label_ve_arama(client):
 
 def test_api_label_eksik_400(client):
     assert client.post("/api/label", json={"doc": "FMS200_Z"}).status_code == 400
+
+
+# ---------------------------------------------------------------- markdown düzenleme
+def test_md_render_durum_klasoru(client, tmp_path):
+    """/durum/*.md de markdown render edilmeli (kök değil, alt klasörde)."""
+    import os
+    root = os.environ["FMS200_ROOT"]
+    os.makedirs(os.path.join(root, "durum"), exist_ok=True)
+    open(os.path.join(root, "durum", "FMS209_DURUM.md"), "w", encoding="utf-8").write(
+        "# Durum\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
+    bi.build(root=root, db=appmod.DB, verbose=False)
+    r = client.get("/api/page", params={"doc": "FMS209_DURUM"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["md"] is True and j["md_path"] and "durum" in j["md_path"]
+    assert j["html"] and "<h1" in j["html"] and "<table" in j["html"]
+
+
+def test_api_save(client, tmp_path):
+    """/api/save diske yazar, indeksi günceller; md olmayan dokümanı reddeder."""
+    import os
+    root = os.environ["FMS200_ROOT"]
+    os.makedirs(os.path.join(root, "durum"), exist_ok=True)
+    yol = os.path.join(root, "durum", "YENI.md")
+    open(yol, "w", encoding="utf-8").write("# eski\n")
+    bi.build(root=root, db=appmod.DB, verbose=False)
+
+    r = client.post("/api/save", json={"doc": "YENI", "text": "# yeni baslik\n\nzebra metni", "user": "Ece"})
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["degisti"]
+    assert open(yol, encoding="utf-8").read().startswith("# yeni baslik")
+    # indeks güncellendi mi → yeni metin + aranabilir
+    p = client.get("/api/page", params={"doc": "YENI"}).json()
+    assert "yeni baslik" in p["text"]
+    assert client.get("/api/search", params={"q": "zebra", "mode": "lexical"}).json()["count"] >= 1
+    # md olmayan doküman reddedilir
+    assert client.post("/api/save", json={"doc": "FMS200_Z", "text": "x"}).status_code == 400
+
+
+def test_api_md_preview(client):
+    r = client.post("/api/md_preview", json={"text": "# B\n\n| a |\n|---|\n| 1 |\n"})
+    assert r.status_code == 200 and "<h1" in r.json()["html"] and "<table" in r.json()["html"]
+
+
+def test_api_history(client, tmp_path):
+    """.md olmayan doküman için boş geçmiş döner (git deposu olmasa da patlamaz)."""
+    j = client.get("/api/history", params={"doc": "FMS200_Z"}).json()
+    assert j["doc"] == "FMS200_Z" and j["commits"] == []
