@@ -107,6 +107,22 @@ def test_api_label_eksik_400(client):
     assert client.post("/api/label", json={"doc": "FMS200_Z"}).status_code == 400
 
 
+def test_etiket_degisince_eski_terim_duser(client):
+    """Etiket değiştirilince ESKİ etiket terimi aramadan düşmeli (2026-10-10 parlatması)."""
+    client.post("/api/label", json={"doc": "FMS200_Z", "page": 1, "label": "zebra etiketi"})
+    assert client.get("/api/search", params={"q": "zebra", "mode": "lexical"}).json()["count"] >= 1
+    client.post("/api/label", json={"doc": "FMS200_Z", "page": 1, "label": "kartal etiketi"})
+    assert client.get("/api/search", params={"q": "zebra", "mode": "lexical"}).json()["count"] == 0
+    assert client.get("/api/search", params={"q": "kartal", "mode": "lexical"}).json()["count"] >= 1
+
+
+def test_etiket_arama_sonucunda_doner(client):
+    """Arayüz 🏷 rozeti için /api/search sonuçlarında `label` alanı bulunmalı."""
+    client.post("/api/label", json={"doc": "FMS200_Z", "page": 1, "label": "zebra ozel etiketi"})
+    j = client.get("/api/search", params={"q": "zebra", "mode": "lexical"}).json()
+    assert j["results"] and j["results"][0]["label"] == "zebra ozel etiketi"
+
+
 # ---------------------------------------------------------------- markdown düzenleme
 def test_md_render_durum_klasoru(client, tmp_path):
     """/durum/*.md de markdown render edilmeli (kök değil, alt klasörde)."""

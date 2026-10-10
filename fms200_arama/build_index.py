@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS pages(
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
   normtext,
+  labeltext,
   tokenize='unicode61 remove_diacritics 2'
 );
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
@@ -197,6 +198,12 @@ def build(root, db, verbose=True, do_embed=True):
     # ETİKETLERİ SİLMEDEN ÖNCE OKU — aksi hâlde DELETE sonrası tablo boştur ve
     # yeniden indeksleme elle verilen etiketleri kaybeder (2026-10-10'da yaşandı: 81 etiket silindi).
     etiketler = _etiketleri_oku(con)
+    # FTS şema göçü: eski DB'de ayrı `labeltext` kolonu yoksa tabloyu yeni şemayla yeniden kur
+    fts_kol = [r[1] for r in con.execute("PRAGMA table_info(pages_fts)")]
+    if fts_kol and "labeltext" not in fts_kol:
+        con.execute("DROP TABLE pages_fts")
+        con.executescript(DDL)
+        con.commit()
     con.execute("DELETE FROM pages")
     con.execute("DELETE FROM pages_fts")
     con.commit()
@@ -246,9 +253,10 @@ def build(root, db, verbose=True, do_embed=True):
              os.path.relpath(src, root) if src else None,
              os.path.relpath(img, root) if img else None, txt, vec, et),
         )
-        # etiket metni FTS'e de girer: yeniden indekslemede de etiketle arama çalışsın
-        fts_metni = norm(f"{txt or ''} {et or ''}")
-        con.execute("INSERT INTO pages_fts(rowid, normtext) VALUES(?,?)", (cur.lastrowid, fts_metni))
+        # etiket AYRI kolona girer (labeltext): aramada daha yüksek ağırlıkla değerlendirilir
+        # ve etiket değişince eski terim metin kolonunda kalmaz (2026-10-10)
+        con.execute("INSERT INTO pages_fts(rowid, normtext, labeltext) VALUES(?,?,?)",
+                    (cur.lastrowid, norm(txt), norm(et or "")))
         n += 1
     con.commit()
     con.execute("INSERT INTO pages_fts(pages_fts) VALUES('optimize')")

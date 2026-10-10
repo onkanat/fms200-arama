@@ -45,8 +45,8 @@ def _lexical(con, fts_q, lang, doc, limit):
     wsql, args = _where(lang, doc)
     fts_where = f" AND {wsql}" if wsql else ""
     sql = (
-        "SELECT p.id,p.doc,p.page,p.lang,p.kind,p.src_path,p.image_path,p.text,"
-        " bm25(pages_fts) AS score,"
+        "SELECT p.id,p.doc,p.page,p.lang,p.kind,p.src_path,p.image_path,p.text,p.label,"
+        " bm25(pages_fts, 1.0, 8.0) AS score,"
         " snippet(pages_fts,0,'[',']',' … ',14) AS snippet"
         " FROM pages_fts f JOIN pages p ON p.id=f.rowid"
         f" WHERE pages_fts MATCH ?{fts_where} ORDER BY score LIMIT ?"
@@ -99,7 +99,7 @@ def search(q, db=DEFAULT_DB, limit=20, lang=None, doc=None, mode="hybrid"):
     if sem_ids:
         ph = ",".join("?" * len(sem_ids))
         sem_rows = {r[0]: r for r in con.execute(
-            f"SELECT id,doc,page,lang,kind,src_path,image_path,text,0 AS score,'' AS snippet"
+            f"SELECT id,doc,page,lang,kind,src_path,image_path,text,label,0 AS score,'' AS snippet"
             f" FROM pages WHERE id IN ({ph})", sem_ids).fetchall()}
     con.close()
 
@@ -117,6 +117,15 @@ def search(q, db=DEFAULT_DB, limit=20, lang=None, doc=None, mode="hybrid"):
             if not e["row"].get("snippet") and rid in lex_ids:
                 e["row"] = dict(next(r for r in lex if r["id"] == rid))
     out = [dict(v["row"]) | {"rrf": v["rrf"]} for v in fused.values()]
+    # Etiket eşleşmesi = üçüncü bir sıralama sinyali (RRF'te listeye girmiş gibi bonus):
+    # böylece HİBRİT modda da etiketli çizimler, etikette geçen terimle üst sıraya çıkar
+    # (2026-10-10 parlatması: "body supply" katalog sayfalarını değil çizimleri getirsin).
+    toks = [t for t in re.findall(r"[^\s]+", norm(q)) if re.search(r"[A-Za-z0-9]", t)]
+    if toks:
+        for e in out:
+            et = norm(e.get("label") or "")
+            if et and all(t.lower() in et.lower() for t in toks):
+                e["rrf"] += 1.0 / (RRF_K + 1)
     out.sort(key=lambda x: -x["rrf"])
     return out[:limit]
 

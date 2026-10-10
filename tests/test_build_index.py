@@ -56,3 +56,49 @@ def test_etiket_yoksa_indeks_yine_kurulur(tmp_path):
     n2 = bi.build(root=root, db=db, verbose=False)
     assert n1 == n2 and n1 == 2
     assert _labels(db) == {}
+
+
+def test_fts_sema_migrasyonu(tmp_path):
+    """Eski tek-kolonlu pages_fts, `labeltext` kolonlu yeni şemaya yükseltilmeli."""
+    root = os.path.join(str(tmp_path), "fms200")
+    _kur(root)
+    db = os.path.join(str(tmp_path), "t.db")
+    con = sqlite3.connect(db)
+    con.executescript(
+        "CREATE TABLE pages(id INTEGER PRIMARY KEY, doc TEXT NOT NULL, page INTEGER, lang TEXT,\n"
+        "  kind TEXT, src_path TEXT, image_path TEXT, text TEXT, vector BLOB, label TEXT);\n"
+        "CREATE VIRTUAL TABLE pages_fts USING fts5(normtext, tokenize='unicode61 remove_diacritics 2');\n")
+    con.commit()
+    assert "labeltext" not in {r[1] for r in con.execute("PRAGMA table_info(pages_fts)")}
+    con.close()
+
+    bi.build(root=root, db=db, verbose=False)
+
+    con = sqlite3.connect(db)
+    kol = {r[1] for r in con.execute("PRAGMA table_info(pages_fts)")}
+    n = con.execute("SELECT COUNT(*) FROM pages_fts").fetchone()[0]
+    con.close()
+    assert "labeltext" in kol and n == 2
+
+
+def test_etiket_metin_eslesmesinden_once_siralanir(tmp_path):
+    """Etiket eşleşmesi (labeltext, 8x ağırlık) yoğun metin eşleşmesini geçmeli."""
+    import sqlite3 as _s
+    root = os.path.join(str(tmp_path), "fms200")
+    d = os.path.join(root, "dokuman", "FMS200_Z")
+    os.makedirs(os.path.join(d, "metin"), exist_ok=True)
+    open(os.path.join(d, "metin", "sayfa_001.txt"), "w", encoding="utf-8").write(
+        "zebra zebra zebra zebra cok yogun metin")
+    open(os.path.join(d, "metin", "sayfa_002.txt"), "w", encoding="utf-8").write("alakasiz icerik")
+    db = os.path.join(str(tmp_path), "t.db")
+    bi.build(root=root, db=db, verbose=False)
+    con = _s.connect(db)
+    rid = con.execute("SELECT id FROM pages WHERE page=2").fetchone()[0]
+    con.execute("UPDATE pages SET label=? WHERE id=?", ("cizim zebra etiketi", rid))
+    con.execute("UPDATE pages_fts SET labeltext=? WHERE rowid=?", ("cizim zebra etiketi", rid))
+    con.commit()
+    con.close()
+
+    from fms200_arama import search as se
+    r = se.search("zebra", db=db, mode="lexical")
+    assert r and r[0]["page"] == 2
