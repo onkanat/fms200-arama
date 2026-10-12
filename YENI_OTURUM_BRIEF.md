@@ -5,9 +5,9 @@
 
 ## Nerede çalışıyoruz
 - **Kod deposu:** `~/Git/fms200-arama` — **`dev` dalındayız.**
-  - `main` = **SABİT sürüm** (Ece'nin paketiyle eşleşir, etiket `v0.1-sabit`) → **dokunma**.
+  - `main` = **SABİT sürüm** (Ece'nin paketiyle eşleşir, etiket **`v0.2-sabit`** — sunum sonrası 11 Eki 2026 birleştirmesi) → **dokunma**.
   - Kural dosyası: `DALLAR.md`.
-- **Arşiv (+ veri):** `~/MacAir/fms-200` (git: `~/MacAir`, etiket `sabit-2026-10-10`).
+- **Arşiv (+ veri):** `~/MacAir/fms-200` (git: `~/MacAir`; uzak depo `git@pi2b01.local:macair.git`, etiket `sabit-2026-10-10`).
 - **Skill (bu işin ansiklopedisi):** `fms-200-arsiv` — **ilk iş bunu yükle** (`skill_view(name='fms-200-arsiv')`).
   Kaynak: mimari, boru hattı, editör+git, paketleme, modül dossiyesi, tuzaklar hepsi orada.
 
@@ -19,38 +19,42 @@ cd ~/Git/fms200-arama && FMS200_ROOT=~/MacAir/fms-200 \
   .venv/bin/uvicorn fms200_arama.app:app --host 0.0.0.0 --port 8765 --reload
 ```
 - Arayüz: MacAir `http://127.0.0.1:8765` · **telefon/notebook (wifi) `http://192.168.1.10:8765`**
-- Durum: `/api/status` · indeks **1118 kayıt**.
+- Durum: `/api/status` · indeks **1119 kayıt**, **138 etiket**, `bayat:false`.
 
 ## Bu oturumda nerede kaldık
 - 8 modül (FMS-201…208) için **durum dossiyeleri** yazıldı: `~/MacAir/fms-200/durum/FMS20x_DURUM.md` (+ `MODUL_DURUM_OZET.md`).
 - Arayüz: markdown render düzeltildi + **✏️ Düzenle** (Markdown editör) + her kayıt **git'e yazar adıyla** işleniyor (`/api/save`, `/api/history`).
-- **Paket:** `~/MacAir/dist/fms200-paket-20261010.tar.gz` (322M) → Ece'nin notebook'u (`./basla.sh`, kılavuz `KURULUM.md`).
-- `dev`/`main` ayrıldı, `v0.1-sabit` etiketlendi; GitHub'a push'lu.
-- **ÇİZİM İNDEKSİ ETİKETLENDİ (10 Eki):** Annex B (27) + Annex C (13) + Annex E (41) = **81 sayfa**,
-  `label` + FTS'te, TR/EN/ES çok dilli. Betikler: `~/MacAir/fms-200/arastirma/annexbc_etiketle.py`,
-  `annexE_etiketle.py` (dry-run varsayılan, `--uygula`, `--sadece`). Antet okuma kanıtları:
-  `arastirma/annex{b,c,E}_antet_okumalari.json` · AnnexE düzeltme tablosu: `arastirma/annexE_esleme_duzeltme.md`.
-- **Kritik hata bulundu ve düzeltildi (bu repoda):** `build_index.build()` etiketleri `DELETE FROM pages`'ten
-  sonra okuyordu → **her reindeks tüm etiketleri siliyordu** (81'i gitti) + etiket hiç FTS'e yazılmıyordu.
-  Düzeltildi (`c1cb3b9`), `tests/test_build_index.py` regresyonu eklendi (45 test).
-  **Kural: reindeksten sonra `etiketli` sayısını karşılaştır.**
-- **Bekleyen küçük işler:** `~/MacAir/fms-200/arastirma/PARLATMA_NOTLARI.md` (11 madde) — parlatma turu.
+- `dev`/`main` ayrıldı; **sunum sonrası `dev` → `main` birleştirildi** + `v0.2-sabit` etiketi + paket yenilendi.
+- **ETİKETLEME (10 Eki): 138 sayfa** — Annex B 27 · Annex C 13 · Annex E 41 · teknik belge çizim ekleri 39
+  (AnnexE + 111 ofseti, doğrulandı) · GRAFCET sayfaları 13 · PLC program sayfaları 5.
+  TR/EN/ES çok dilli, `label` + FTS `labeltext`. Betikler: `arastirma/annexbc_etiketle.py`,
+  `annexE_etiketle.py` (`--td`), `kod_sayfalari_etiketle.py` (hepsi dry-run varsayılan, `--uygula`, `--sadece`).
+- **Kritik hata düzeltildi (bu repoda):** `build_index.build()` etiketleri `DELETE FROM pages`'ten sonra
+  okuyordu → her reindeks **tüm etiketleri siliyordu**; ayrıca etiket FTS'e hiç yazılmıyordu. Düzeltildi
+  (`c1cb3b9`), regresyon testleri eklendi (**51 test**). **Kural: reindeksten sonra `etiketli` sayısını karşılaştır.**
+- **Parlatma turu yapıldı** (10 Eki): etiket güncellenince eski terim düşüyor (ayrı `labeltext` kolonu),
+  `norm()` X/Y/Z istisnası, `bayat` yalnız indekslenen kaynaklara bakıyor, etiket eşleşmesi sıralamada öne
+  geçti (bm25 8× ağırlık + hibrit RRF bonusu), arayüzde 🏷 rozeti. Liste DONDURULDU.
+- **AnnexA arıza tabloları** vision ile okundu → `durum/ANNEXA_ARIZA_TABLOLARI.md` (EST.1–6, 65 kayıt:
+  semptom → **kırık bileşen + Xn/Yn**); dossilerin §4'ü bu tabloyla beslendi. **EST.7/8 tablosu arşivde yok.**
 
 ## Sıradaki iş (birini seç / kullanıcı söyler)
 1. **Yeni döküman geldikçe:** arşive koy → `durum/` + `arastirma/` betikleriyle işle → **⟳ İndeks** (ya da `build_index`) → gerekirse `modul_durum.py FMS-20x`.
-2. ~~Annex B/C şemalarının istasyon sayfalarını elle işaretlemek~~ → **yapıldı (10 Eki)**; kalan:
-   yeni şema/çizim seti gelirse aynı deseni uygula (antet kırp → vision → `*_etiketle.py --uygula`).
-3. **Lab'a gidince** dossiyelerin §5 "gerçek durum" tablolarını bulgularla doldurmak.
-4. **Parlatma turu** — `PARLATMA_NOTLARI.md` maddeleri; **parlatma bitmeden `main`'e merge / paket YOK.**
+2. **Yeni şema/çizim seti gelirse:** antet kırp → vision/OCR → ilgili `*_etiketle.py --uygula` → reindex
+   → `etiketli` sayısını doğrula.
+3. **Lab'a gidince** dossiyelerin §5 "gerçek durum" tablolarını bulgularla doldurmak
+   (EST.3/4/5/7 elektrik şeması eksikliği ve EST.7/8 arıza tablosu eksikliği lab'da teyit edilecek).
+4. **Parlatma listesi kapandı** (`PARLATMA_NOTLARI.md` — yeni iş eklenmez, madde durumları orada).
 
-## Paket / Ece kopyası (kullanıcı kararı, 10 Eki 2026)
-- **Ece'nin kopyası en son güncellenir (≈5 gün sonra).** Şu anki kopyada yalnız **sunum** yapılıyor.
-- Yani: parlatmalar → `dev` pürüzsüz → **sonra** `scripts/paketle.sh` (+ gerekiyorsa `main` merge/etiket).
-- Mevcut `.tar.gz` **81 etiketsiz** DB içerir; paketi yeniden üretmeden "Ece çizimleri modül adıyla arıyor"
-  diye raporlama.
-
+## Paket / Ece kopyası
+- **Yeni paket:** `~/MacAir/dist/fms200-paket-<tarih>.tar.gz` — **138 etiketli DB** ile üretildi ve
+  temiz dizine açılıp çalıştırılarak doğrulandı (bkz. `PARLATMA_NOTLARI` / commit mesajı).
+- Ece'nin notebook'u: `tar xzf …`, sonra `./basla.sh` (0.0.0.0:8765), kılavuz `KURULUM.md`.
+- **Kural:** paket DB'yi taşır → her etiket/indeks işinden sonra paket **bayatlar**; sürüm notunda
+  hangi etiket setiyle üretildiği yazılır.
 
 ## Değişmezler
 - Ölçmeden "yapıldı" deme: test (`pytest`), `curl` HTTP 200, uzak commit hash'i kanıt sayılır.
 - İş bitince: `dev`'e commit → stabilize olunca `main`'e merge + etiket → `scripts/paketle.sh`.
 - Büyük üretilmiş ikililer repoya **girmez** (`.gitignore`).
+
