@@ -180,8 +180,8 @@ async function ara(){
     <div class="card" data-doc="${esc(x.doc)}" data-page="${x.page ?? ''}">
       <div class="meta"><span class="tag">${esc(x.doc)}</span>
         <span>${x.page!=null?('s.'+x.page):(x.kind==='doc'?'belge':'')}</span>
-        <span class="tag">${x.lang||'??'}</span>${x.has_image?'<span class="tag">🖼</span>':''}</div>
-      <div class="snip">${esc((x.snippet||'').slice(0,220))||'<i style="color:#8a93a6">(eşleşme özeti yok)</i>'}</div>
+        <span class="tag">${x.lang||'??'}</span>${x.has_image?'<span class="tag">🖼</span>':''}${x.label?'<span class="tag" style="background:#2a6f4e;color:#eafff4" title="'+esc(x.label)+'">🏷 '+esc(x.label.slice(0,46))+(x.label.length>46?'…':'')+'</span>':''}</div>
+      <div class="snip">${esc((x.snippet||'').slice(0,220))||(x.label?'<i style="color:#8a93a6">🏷 '+esc(x.label)+'</i>':'<i style="color:#8a93a6">(eşleşme özeti yok)</i>')}</div>
     </div>`).join('');
   document.querySelectorAll(".card").forEach(c=>c.onclick=()=>{
     document.querySelectorAll(".card").forEach(k=>k.classList.remove("sel"));

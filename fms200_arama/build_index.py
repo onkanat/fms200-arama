@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS pages(
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
   normtext,
+  labeltext,
   tokenize='unicode61 remove_diacritics 2'
 );
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
@@ -194,6 +195,15 @@ def build(root, db, verbose=True, do_embed=True):
         con.execute("ALTER TABLE pages ADD COLUMN vector BLOB")
     if "label" not in kolonlar:
         con.execute("ALTER TABLE pages ADD COLUMN label TEXT")
+    # ETİKETLERİ SİLMEDEN ÖNCE OKU — aksi hâlde DELETE sonrası tablo boştur ve
+    # yeniden indeksleme elle verilen etiketleri kaybeder (2026-10-10'da yaşandı: 81 etiket silindi).
+    etiketler = _etiketleri_oku(con)
+    # FTS şema göçü: eski DB'de ayrı `labeltext` kolonu yoksa tabloyu yeni şemayla yeniden kur
+    fts_kol = [r[1] for r in con.execute("PRAGMA table_info(pages_fts)")]
+    if fts_kol and "labeltext" not in fts_kol:
+        con.execute("DROP TABLE pages_fts")
+        con.executescript(DDL)
+        con.commit()
     con.execute("DELETE FROM pages")
     con.execute("DELETE FROM pages_fts")
     con.commit()
@@ -214,7 +224,7 @@ def build(root, db, verbose=True, do_embed=True):
     for doc, page, txt, src, img in _iter_units(root):
         kayitlar.append((doc, page, txt, src, img))
     # etiket metni varsa onu (daha temiz bağlam), yoksa sayfa metnini göm
-    etiketler = _etiketleri_oku(con)
+    # (etiketler yukarıda, silmeden önce okundu)
     texts = [_embed_metni(etiketler.get((doc, page)), doc, page, txt)
              for (doc, page, txt, src, img) in kayitlar]
 
@@ -236,14 +246,17 @@ def build(root, db, verbose=True, do_embed=True):
 
     n = 0
     for (doc, page, txt, src, img), vec in zip(kayitlar, vecs):
+        et = etiketler.get((doc, page))
         cur = con.execute(
             "INSERT INTO pages(doc,page,lang,kind,src_path,image_path,text,vector,label) VALUES(?,?,?,?,?,?,?,?,?)",
             (doc, page, detect_lang(txt), "page" if page is not None else "doc",
              os.path.relpath(src, root) if src else None,
-             os.path.relpath(img, root) if img else None, txt, vec,
-             etiketler.get((doc, page))),
+             os.path.relpath(img, root) if img else None, txt, vec, et),
         )
-        con.execute("INSERT INTO pages_fts(rowid, normtext) VALUES(?,?)", (cur.lastrowid, norm(txt)))
+        # etiket AYRI kolona girer (labeltext): aramada daha yüksek ağırlıkla değerlendirilir
+        # ve etiket değişince eski terim metin kolonunda kalmaz (2026-10-10)
+        con.execute("INSERT INTO pages_fts(rowid, normtext, labeltext) VALUES(?,?,?)",
+                    (cur.lastrowid, norm(txt), norm(et or "")))
         n += 1
     con.commit()
     con.execute("INSERT INTO pages_fts(pages_fts) VALUES('optimize')")

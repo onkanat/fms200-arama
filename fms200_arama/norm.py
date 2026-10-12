@@ -15,13 +15,17 @@ _EN = re.compile(r'\b(the|and|system|station|module|with|from|manual|training)\b
 
 
 def norm(t: str) -> str:
-    """Arama metni: NBSP temizle, tek-karakter token'ları öncekine yapıştır, boşluk sıkıştır."""
+    """Arama metni: NBSP temizle, tek-karakter token'ları öncekine yapıştır, boşluk sıkıştır.
+
+    İstisna: **X / Y / Z** tek başına bir eksen etiketi olabilir ("servo sürücü X ekseni");
+    bunlar birleştirilmez, yoksa `sürücüX` gibi bozuk token oluşur (2026-10-10).
+    """
     t = (t or "").replace("\xa0", " ")
     out = []
     for tk in t.split(" "):
         if not tk:
             continue
-        if len(tk) == 1 and tk.isalnum() and out:
+        if len(tk) == 1 and tk.isalnum() and out and tk.upper() not in ("X", "Y", "Z"):
             out[-1] += tk          # önceki token'a yapıştır
         else:
             out.append(tk)

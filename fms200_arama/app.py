@@ -110,7 +110,8 @@ def api_search(q: str = Query(""), lang: str | None = None, doc: str | None = No
     rows = se.search(q, db=DB, limit=limit, lang=lang or None, doc=doc or None, mode=mode)
     out = [{"doc": r["doc"], "page": r["page"], "lang": r["lang"], "kind": r["kind"],
             "snippet": r.get("snippet") or "", "score": r.get("score") or 0,
-            "rrf": r.get("rrf") or 0, "has_image": bool(r.get("image_path"))} for r in rows]
+            "rrf": r.get("rrf") or 0, "has_image": bool(r.get("image_path")),
+            "label": r.get("label")} for r in rows]
     return {"count": len(out), "results": out}
 
 
@@ -249,10 +250,13 @@ def api_label(payload: dict):
     else:
         con.execute("UPDATE pages SET label=? WHERE doc=? AND page=?", (label, doc, int(page)))
     con.commit()
-    # etiket metnini FTS'e de yaz (anında aranabilir olsun)
-    for rid, in con.execute(
-            "SELECT id FROM pages WHERE doc=? AND (? IS NULL OR page=?)", (doc, page, page)).fetchall():
-        con.execute("UPDATE pages_fts SET normtext=normtext||' '||? WHERE rowid=?", (label, rid))
+    # etiket AYRI FTS kolonuna yazılır (labeltext) ve metin kolonu YENİDEN kurulur:
+    # böylece etiket değiştirilince eski etiket terimleri aramadan düşer (2026-10-10)
+    for rid, txt in con.execute(
+            "SELECT id, text FROM pages WHERE doc=? AND (? IS NULL OR page=?)",
+            (doc, page, page)).fetchall():
+        con.execute("UPDATE pages_fts SET normtext=?, labeltext=? WHERE rowid=?",
+                    (norm(txt or ""), norm(label), rid))
     con.commit()
     con.close()
     return {"ok": True}
@@ -264,9 +268,17 @@ def _has_meta(con):
 
 
 def _en_yeni_mtime(root):
+    """İndekslenen kaynakların en yeni mtime'ı — `bayat` bayrağı bunu kullanır.
+
+    Yalnız **indekse giren** dizinlere bakılır (`dokuman/`, `durum/`, `yazilim/`, `mekanik/`,
+    kök `*.md`). `arastirma/` gibi üretim/not klasörlerindeki değişiklikler bayrağı
+    yanlışlıkla `true` yapıyordu (2026-10-10) — çünkü indeksleyici onları hiç okumaz.
+    """
+    YOKSAY = ("arastirma", "devre-semalari", "scripts", "dist", "tools", "__pycache__")
     yeni = 0.0
-    for d, _, fs in os.walk(root):
-        if "/." in d or "/.venv" in d or "/__pycache__" in d:
+    for d, dirs, fs in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in YOKSAY and not x.startswith(".")]
+        if os.path.relpath(d, root).split(os.sep)[0] in YOKSAY:
             continue
         for f in fs:
             if f.lower().endswith((".md", ".txt", ".jpg", ".jpeg", ".png", ".webp", ".pdf")):
