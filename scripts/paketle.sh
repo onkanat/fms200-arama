@@ -19,6 +19,11 @@ rsync -a --exclude '.venv' --exclude '__pycache__' --exclude '.git' \
       --exclude '.pytest_cache' --exclude '.DS_Store' \
       "$KOD/" "$H/fms200-arama/"
 
+# DB'nin mtime'ını arşiv kopyasından YENİ yap: /api/status'taki 'bayat' bayrağı, arşivdeki en yeni
+# dosya mtime'ı ile DB mtime'ını karşılaştırır. Kopyalama arşiv dosyalarını tazelediği için paket
+# ilk açılışta yanlış 'bayat:true' gösteriyordu (11-12 Eki 2026 paket denemesinde görüldü).
+[ -f "$H/fms200-arama/data/fms200.db" ] && touch "$H/fms200-arama/data/fms200.db"
+
 echo "→ başlatma betiği + kılavuz"
 cp "$KOD/scripts/basla.sh" "$H/basla.sh"; chmod +x "$H/basla.sh"
 cp "$KOD/KURULUM.md" "$H/KURULUM.md"
