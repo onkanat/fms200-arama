@@ -6,7 +6,8 @@
 
 ## Nerede çalışıyoruz
 - **Kod deposu:** `~/Git/fms200-arama` — **`dev` dalındayız.** Durum (13 Eki, ölçüldü):
-  - `dev` temiz, HEAD **`0b8acfe`** = `origin/dev` (`git ls-remote` ile doğrulandı).
+  - `dev` temiz, HEAD **`6889f29`** (= `origin/dev`; 13 Eki brief commit'i) — her iş sonunda
+    uzak hash `git ls-remote origin refs/heads/dev` ile doğrulanır.
   - `main` = **SABİT sürüm** **`fe3d4e0`** = `origin/main`. **`dev` merge EDİLMİŞ durumda**
     (main ⊇ dev; main'in dev'e göre 2 ek commit'i: `4a71b21` v0.2-sabit birleşmesi + `fe3d4e0` paketle.sh mtime düzeltmesi).
   - Etiketler: `v0.1-sabit` → `d15fe36` · `v0.2-sabit` → `fe3d4e0`. Kural dosyası: `DALLAR.md`.
@@ -17,7 +18,7 @@
   yalnız kendi dosyalarını ekle, yabancı değişiklikleri raporla/sahiplenme.
 - **Skill (bu işin ansiklopedisi):** `fms-200-arsiv` — **ilk iş bunu yükle** (`skill_view(name='fms-200-arsiv')`).
 
-## Çalışan servis — ŞU AN KAPALI (13 Eki ölçüldü: 8765'te uvicorn yok) → ayağa kaldır:
+## Çalışan servis — 13 Eki 14:30'da AYAĞA KALDIRILDI (brief'ten sonraki ilk iş buydu)
 ```bash
 cd ~/Git/fms200-arama && FMS200_ROOT=~/MacAir/fms-200 \
   FMS200_EMBED_URL=http://192.168.1.26:11434 FMS200_EMBED_MODEL=nomic-embed-text \
@@ -39,13 +40,16 @@ cd ~/Git/fms200-arama && FMS200_ROOT=~/MacAir/fms-200 \
   `ANNEXA_ARIZA_TABLOLARI.md` (10 Eki 19:06).
 - Etiketleme: **138 sayfa** (Annex B 27 · Annex C 13 · Annex E 41 · teknik belge ekleri 39 · GRAFCET 13 · PLC 5);
   `label` + FTS `labeltext`; betikler `arastirma/*_etiketle.py` (dry-run varsayılan, `--uygula`).
-- **Paketler** (`~/MacAir/dist/`): `fms200-paket-20261010.tar.gz` (337,9 MB) — **DONDURULMUŞ**, `dist/OKU.md`:
-  yeniden üretme/üzerine yazma · `fms200-paket-20261012.tar.gz` (341,5 MB, 12 Eki 22:27) — hangi etiket
-  setiyle üretildiği ve doğrulandığı `OKU.md`'de **yazılı değil** (aşağıdaki 1. iş).
+- **Paketler** (`~/MacAir/dist/`, ayrıntı + sha256: `dist/OKU.md`):
+  `fms200-paket-20261010.tar.gz` (337,9 MB, **etiketsiz** DB) — **DONDURULMUŞ**;
+  `fms200-paket-20261012.tar.gz` (341,5 MB, 12 Eki 22:27) — **doğrulandı (13 Eki): içindeki DB
+  1119 kayıt / 138 etiket ve etiket üçlüleri canlı DB ile BİREBİR AYNI; paket içi kod `dev` ile
+  23/24 dosyada birebir; temiz dizine açılıp `basla.sh` ile çalıştırıldı → `bayat:false`, arama /
+  markdown / görsel uçları 200, kaydetme git commit'i yazıyor.** O da **DONDURULMUŞ**.
 
 ## Sıradaki iş (birini seç / kullanıcı söyler)
-1. **12 Eki paketinin durumu:** etiket setini/doğrulamasını teyit et → `dist/OKU.md`'ye işle.
-   Dondurulmuş 10 Eki dosyasına **dokunma**; taze paket gerekiyorsa **yeni ad/konum** + etiket.
+1. **[KAPANDI 13 Eki] 12 Eki paketinin durumu:** doğrulandı + `dist/OKU.md`'ye işlendi (yukarıda).
+   Dondurulmuş iki dosyaya **dokunulmaz**; taze paket gerekiyorsa **yeni ad/konum** + etiket.
 2. **Yeni döküman geldikçe:** arşive koy → `durum/` + `arastirma/` betikleriyle işle → **⟳ İndeks**
    (ya da `build_index`) → gerekirse `modul_durum.py FMS-20x` → **`etiketli` sayısını doğrula**.
 3. **Yeni şema/çizim seti gelirse:** antet kırp → vision/OCR → ilgili `*_etiketle.py --uygula` → reindex
