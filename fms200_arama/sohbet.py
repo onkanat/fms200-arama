@@ -35,6 +35,9 @@ SISTEM = (
     "(hidrolik pres = hydraulic press = prensa hidráulica).\n"
     "· Atıf: her bilgiden sonra [belge, sayfa N] — örnek [FMS203_DURUM, sayfa 3].\n"
     "· Kaynakta yoksa yalnız \"arşivde bulamadım\" yaz; soru belirsizse (hangi modül/devre?) sor.\n"
+    "· Kaynaklar soruyu TAM karşılamıyorsa: tam karşılığı olmadığını söyle **ve** kaynakta BULUNANI "
+    "söyle (ör. istenen model yoksa, arşivdeki en yakın model/belge hangisi). Kaynakta geçmeyen "
+    "parça numarası/teknik değer **uydurma**.\n"
     "· Gerekirse `arastir_arsiv` aracıyla ek arama yap (TR/EN/ES sorgu serbest)."
 )
 
@@ -457,13 +460,17 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
         mesajlar.append({"role": "assistant", "content": _arac_bloklarini_temizle(ham_icerik),
                          "tool_calls": cagrilar})
         for c in cagrilar:                                  # araç çağrılarını yürüt
-            fonk = (c.get("function") or {})
+            # İki biçim var: OpenAI/ollama sarmalı {"function":{...}} ve DÜZ biçim {"name":...,"arguments":...}
+            # (ölçüldü: nemotron-3-nano:4b düz biçim döndürüyor → sarmalayıcı yoksa çağrının kendisi).
+            fonk = c.get("function") or c
             ad, args = fonk.get("name") or "", fonk.get("arguments") or {}
             if isinstance(args, str):                        # bazı modeller JSON'u metin döndürür
                 try:
                     args = json.loads(args)
                 except ValueError:
                     args = {"sorgu": args}
+            if not isinstance(args, dict):
+                args = {"sorgu": str(args)}
             if ad == "arastir_arsiv":
                 arac_sorgulari.append(str(args.get("sorgu") or "")[:80])
             mesajlar.append({"role": "tool", "content": _arac_calistir(db, ad, args),
