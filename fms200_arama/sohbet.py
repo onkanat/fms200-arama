@@ -206,12 +206,15 @@ def uc() -> dict:
         # yalnız 1–5. satırını taşıyor → model "liste eksik" diyor (uydurmuyor). Ev modunda:
         # bağlam 24.000 kr · dilim 2000 kr · dilim sayısı 6 · en çok 8 dilim.
         think = os.environ.get("FMS200_CHAT_THINK", "0") == "1"
-        # BAĞLAM: `num_ctx` GÖNDERİLMEMEK hızı 9× yiyordu (ölçüldü 14 Eki, aynı soru):
-        #   num_ctx yok → 7,6 tok/s (sunucu varsayılanı = dev KV önbelleği)
-        #   num_ctx=4096 → 71,4 tok/s (ilk çağrıda 185 sn model yeniden yükleme, tek seferlik)
-        # Kullanıcı "sınır yok" demişti; ölçüm aykırı olduğu için varsayılan 16.384'e çekildi
-        # (24.000 kr bağlam ≈ 6 bin token + yanıt 4.000 token → rahat sığar). Sınırsız isteyen 0 verir.
-        ctx_ayar = _sayi("FMS200_CHAT_CTX", 16384)
+        # BAĞLAM: `num_ctx` GÖNDERİLMEZ — kullanıcı kararı (sunucudaki model ayarı geçerli).
+        # KONTROLLÜ A/B (14 Eki gece, ECE_PC BOŞ, 3'er tekrar, eval_duration):
+        #   num_ctx yok → 78,1 / 71,1 / 73,7 → ort **74,3 tok/s**
+        #   num_ctx=16384 → 65,7 / 68,7 / 68,6 → ort **67,7 tok/s**
+        # → Yani sınır koymak hız KAZANDIRMIYOR, ~%9 yavaşlatıyor. Üstelik her ctx değişimi modeli
+        # yENİDEN YÜKLETİYOR (**161–171 sn**, ölçüldü). Eski "7,6 tok/s = num_ctx yüzünden" teşhisi
+        # YANLIŞTI: sebep ECE_PC'de GPU'yu kullanan başka işti (ECE oyun oynuyordu). Ders:
+        # paylaşılan makinede tek ölçümle hüküm verilmez — önce makinenin boş olduğu doğrulanır.
+        ctx_ayar = _sayi("FMS200_CHAT_CTX", 0)          # 0 = sınır yok (varsayılan)
         return {"url": EV_URL, "model": os.environ.get("FMS200_EV_MODEL", EV_MODEL),
                 "think": think, "ctx": (ctx_ayar if ctx_ayar > 0 else None),
                 "en_fazla": _sayi("FMS200_CHAT_MAX", 8000 if think else 4000),

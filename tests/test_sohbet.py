@@ -268,20 +268,20 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
 
 
 def test_uc_ev_modu(monkeypatch):
-    """EV AĞINDA → ECE_PC 35B · **think KAPALI** · **bağlam 16.384** (sınır-yok 9× yavaştı).
-    Ölçüm (14 Eki): think=true 81–240 sn ve boş/kesik yanıt; think=false 0,2–15,7 sn ve 15/15.
-    num_ctx gönderilmezse 7,6 tok/s ↔ 4096 ile 71,4 tok/s."""
+    """EV AĞINDA → ECE_PC 35B · **think KAPALI** · **bağlam sınırı YOK** (kullanıcı kararı).
+    Kontrollü A/B (ECE_PC boş, 3'er tekrar): sınırsız 74,3 tok/s ↔ ctx=16384 67,7 tok/s → sınır
+    koymak kazandırmıyor; ayrıca her ctx değişimi 161–171 sn'lik model yeniden yüklemesi demek."""
     monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
     u = sh.uc()
     assert u["mod"] == "ev" and u["url"] == sh.EV_URL and u["model"] == sh.EV_MODEL
-    assert u["think"] is False and u["ctx"] == 16384 and u["en_fazla"] == 4000
+    assert u["think"] is False and u["ctx"] is None and u["en_fazla"] == 4000
 
 
-def test_ev_modu_baglam_sinirsiz_istenirse(monkeypatch):
-    """`FMS200_CHAT_CTX=0` → bağlam sınırı yok (kullanıcı ısrarı / ölçüm karşılaştırması için)."""
+def test_ev_modu_baglam_acikca_verilirse(monkeypatch):
+    """`FMS200_CHAT_CTX=8192` → istemde bağlam sınırı gönderilir (varsayılan 0 = sınır yok)."""
     monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
-    monkeypatch.setenv("FMS200_CHAT_CTX", "0")
-    assert sh.uc()["ctx"] is None
+    monkeypatch.setenv("FMS200_CHAT_CTX", "8192")
+    assert sh.uc()["ctx"] == 8192
 
 
 def test_ev_modu_think_acilirsa_butce_de_yukselir(monkeypatch):

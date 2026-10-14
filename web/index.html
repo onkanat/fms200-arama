@@ -349,6 +349,7 @@ async function sor(){
       ? `<div class="hata" style="color:#8a93a6">🔎 model arşivde araştırdı: ${r.arac_sorgulari.map(x=>esc(x)).join(" · ")}</div>` : "";
     $("#view").innerHTML = `<div class="ask">
       <div class="sor">💬 ${esc(q)} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${r.kaynaklar.length} kaynak (${r.baglam_kr} kr) · ${ms} ms</div>
+      ${(r.mod==="ev" && (r.tok_s||99) < 15)?`<div class="hata" style="color:#ffce6a">⚠ yanıt çok yavaş (${r.tok_s} tok/s) — ECE_PC paylaşımlı bir makine: orada GPU'yu kullanan başka bir iş (oyun vb.) çalışıyor olabilir. Ayarlarda sorun yok.</div>`:""}
       ${arastirma}
       ${r.ek_arama?'<div class="hata" style="color:#8a93a6">🔎 model bağlamı yetersiz buldu → <b>koddan ek arama</b> yapıldı'+(r.ek_arama_kabul?' ve <b>yanıt güncellendi</b>':(r.ek_arama_yeni?' (yeni belgeler geldi, yanıt değişmedi)':' (yeni belge çıkmadı)'))+'</div>':""}
       ${r.eksik_beyan?`<div class="hata" style="color:#ffce6a">📄 Yanıt "arşivde yok" diyor — <b>aşağıdaki belge adına tıkla</b> ve kendin bak: ${
