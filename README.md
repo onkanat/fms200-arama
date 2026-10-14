@@ -6,8 +6,8 @@ Türkçe web arayüzü.
 
 | | |
 |---|---|
-| **Sürüm** | `v0.3-sabit` (14 Eki 2026) |
-| **Test** | 87 test (`pytest`) |
+| **Sürüm** | `v0.4-sabit` (15 Eki 2026) |
+| **Test** | 96 test (`pytest`) |
 | **Durum** | `dev` günlük iş · `main` sabit sürüm · paket `dist/` (Ece'nin notebook'u) |
 
 - **Lexical:** SQLite **FTS5** (`bm25`), aksan-duyarsız (`remove_diacritics 2`) → ş→s, ı→i, á→a
@@ -49,20 +49,33 @@ jenerik dossiye freni) → sayfa **metninden** dilimler → model → atıflı y
 
 | Ortam | Uç · model | think | Bağlam |
 |---|---|---|---|
-| **Ev ağında** (ECE_PC erişilebilir) | `192.168.1.26:11435` · `qwen3.6:35b-a3b-coding-mtp-q4_K_M` | **açık** | **sınır yok** (sunucudaki model ayarı) |
+| **Ev ağında** (ECE_PC erişilebilir) | `192.168.1.26:11435` · `qwen3.6:35b-a3b-coding-mtp-q4_K_M` | **kapalı** (ölçüm: açıkken 81–240 sn ve boş/kesik yanıt; `FMS200_CHAT_THINK=1` ile açılır) | **sınır yok** (sunucudaki model ayarı) |
 | **Ev ağı yok (okul)** | yerel `gemma3:4b` | kapalı | 4096 |
+
+> **Ölçüm notu (15 Eki, kontrollü A/B, makine boş):** "bağlam sınırı koymak hızı artırır" iddiası
+> **yanlıştı** — sınırsız **74,3 tok/s** ↔ `num_ctx=16384` **67,7 tok/s** (3'er tekrar). Ayrıca her ctx
+> değişimi modeli **161–171 sn** yeniden yükler. Yavaşlığın gerçek sebebi **ECE_PC'de GPU çekişmesi**
+> (oyun): o sırada hız **1–8 tok/s**. Arayüz bu hâlde "ECE_PC yoğun olabilir" uyarısı gösterir.
 
 - Ölçüm **TCP denemesi + 60 sn önbellek** → istek başına gecikme yok. `FMS200_CHAT_URL` açıkça
   verilirse "elle" modu (ölçüm/deneme) kullanılır.
 - **`think=true` bütçeyi yer:** ölçüldü — 600 token bütçeyle üretimin tamamı muhakemeye gitti ve
-  **yanıt 0 kr** döndü. Bu yüzden think açıkken bütçe 3000'dir ve **düşünme metni yanıt yerine konmaz**.
+  **yanıt 0 kr** döndü. Bu yüzden **varsayılan kapalıdır**; açılırsa bütçe otomatik **8000** olur ve
+  **düşünme metni yanıt yerine konmaz**. Ayrıca yanıt 100 kr'nin altında kalırsa bir kez düşünmesiz
+  yeniden denenir.
+- **Yeni belge ekleme (Ece):** `fms-200/BELGE_EKLEME.md` — belge arşiv klasörüne konur, **⟳ İndeks** ile
+  indekslenir (yükleme düğmesi yoktur). Bu kılavuzun kendisi de indekslidir; sohbet ondan cevaplar.
+- **Dürüstlük ağları:** (1) yanıt "arşivde yok" diyorsa arayüz **"📄 belge adına tıkla"** ipucu verir;
+  (2) model eksik dese de aracı çağırmazsa kod **yönlendirmesiz ek arama** yapar — **yalnız yeni belge
+  geldiyse** ikinci model çağrısı yapılır (ölçüldü: yoksa boşuna ~28 sn); (3) atıf koymazsa kaynakları
+  kod ekler.
 - Durum ucunda görünür: `/api/status → sohbet.{mod, think, ev_agi, ctx, en_fazla, arac_destek}`.
 
 ### Ölçülmüş model tablosu (sıkı ölçüt: zorunlu/any/yasak + bağlamda **tanınan** atıf)
 
 | Model | Skor | Süre | Not |
 |---|---|---|---|
-| `qwen3.6:35b-a3b-coding-mtp-q4_K_M` (ECE_PC) | **15/15** | 0,2–15,7 sn (think kapalı) · 26–68 sn (açık) · 18–90 tok/s | ev modu |
+| `qwen3.6:35b-a3b-coding-mtp-q4_K_M` (ECE_PC) | **16/16** (15 Eki, makine boş) | ort **6,1 sn** (0,2–17,6) · 13–94 tok/s | ev modu · önceki 15/15 · makine meşgulken 1–8 tok/s |
 | `gemma3:4b` (yerel, 8 GB M2) | **14/15** | 20–130 sn · 1,5–11 tok/s | okul modu |
 | `qwen3:4b` (düşünen) | ❌ | 61–141 sn | bütçe muhakemeye gidiyor |
 | 1B sınıfı (`gemma3:1b`) | ❌ 0 atıf | — | uydurma |
@@ -117,9 +130,11 @@ Model yoksa **arama bozulmaz** — `/api/ask` `ok:false` + kaynak listesi döner
 | `FMS200_CHAT_URL` / `FMS200_CHAT_MODEL` | *(ağ ölçümü)* / `gemma3:4b` | açıkça verilirse "elle" modu |
 | `FMS200_EV_URL` / `FMS200_EV_MODEL` | `http://192.168.1.26:11435` / 35B coding | **ev ağında** kullanılır |
 | `FMS200_YEREL_URL` / `FMS200_YEREL_MODEL` | `http://127.0.0.1:11434` / `gemma3:4b` | **ev ağı yoksa** |
-| `FMS200_CHAT_THINK` | ev: `1` · yerel: `0` | düşünme; açıkken bütçe 3000 |
-| `FMS200_CHAT_CTX` | `4096` (`0` = sınır yok) | ev modunda **gönderilmez** (sunucu ayarı) |
-| `FMS200_CHAT_MAX` | ev: `3000` · yerel: `600` | en fazla üretilecek token |
+| `FMS200_CHAT_THINK` | `0` (kapalı) | **Ölçüldü:** açıkken aynı soru 81–240 sn ve boş/kesik yanıt; kapalıyken 0,2–15,7 sn ve 15/15. Açılırsa bütçe otomatik 8000 |
+| `FMS200_CHAT_CTX` | `0` = **sınır yok** (varsayılan) | ev modunda **gönderilmez**; verilirse `num_ctx` olarak gider (kontrollü A/B: sınır koymak hızı **artırmıyor**) |
+| `FMS200_CHAT_MAX` | ev: `4000` (`think=1` ise `8000`) · yerel: `600` | en fazla üretilecek token |
+| `FMS200_CHAT_BUTCE` · `_DILIM` · `_DILIM_SAYI` · `_SEC` | ev: `24000` kr · `2000` kr · `6` · `8` | **bağlam bütçesi** (yerel: 6500 · 1300 · 4 · 5). Büyük model + tablolu belgeler için ölçülerek büyütüldü |
+| `FMS200_CHAT_KEEP_ALIVE` | ev: `30m` · yerel: `5m` | modeli sıcak tut — boşalınca ilk soru 22 GB yeniden yükleme yüzünden **2-3 dk** sürüyordu |
 | `FMS200_CHAT_TIMEOUT` / `FMS200_CHAT_TIMEOUT_GOREV` | 120/600 · 300 | saniye |
 | `FMS200_CHAT_TOOLS` | `1` | `0` → ajan araması kapalı |
 
@@ -159,7 +174,7 @@ Varsayılan sunucu `http://192.168.1.26:11434`, model `deepseek-ocr:3b-bf16`
 ## Test
 
 ```bash
-.venv/bin/python -m pytest tests/ -q      # 87 test (ağ yok: model çağrısı monkeypatch ile taklit)
+.venv/bin/python -m pytest tests/ -q      # 96 test (ağ yok: model çağrısı monkeypatch ile taklit)
 ```
 
 ---

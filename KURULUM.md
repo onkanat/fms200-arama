@@ -44,8 +44,13 @@ yanıt gelir. Atıflar tıklanabilir; bağlamda olmayan atıf **turuncu** işare
 - **Sohbet yalnız arşivden konuşur:** bilmediğini "arşivde bulamadım" diye söyler; kaynakta olmayan
   bilgi eklemesin diye yanıtlar atıflarla denetlenir.
 
-## 4. Kim ne yaptı (git)
+## 3c. Yeni belge eklemek / indekslemek
 
+Belgeler **arşiv klasörüne** konur, sonra **⟳ İndeks** ile indekslenir (uygulamada yükleme düğmesi yoktur).
+Hangi klasöre, hangi formatla, PDF/çizim/fotoğraf nasıl işlenir, doğrulama ve tuzaklar:
+**`fms-200/BELGE_EKLEME.md`** (kılavuz ayrıca uygulamanın kendisinde de aranabilir — indekslidir).
+
+## 4. Kim ne yaptı (git)
 Sağ üstteki **👤** düğmesine basıp **adını yaz**. Bundan sonra her düzenleme o adla **git'e işlenir**.
 Geçmişi görmek için (düzenleyicide "son:" notu, ya da terminalde):
 

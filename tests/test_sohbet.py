@@ -1,6 +1,7 @@
 """Sohbet (RAG) katmanı testleri — ağ YOK: model çağrısı monkeypatch ile taklit edilir."""
 import json
 import os
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -234,7 +235,7 @@ def test_model_arac_cagrisini_yurutur(client, monkeypatch):
     """Araç destekli model `arastir_arsiv` çağırırsa: araç çalışır, ikinci turda yanıt gelir."""
     cagrilar = []
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagrilar.append(mesajlar)
         if len(cagrilar) == 1:
             assert araclar is True, "ilk turda araç tanımı gönderilmeli"
@@ -267,11 +268,28 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
 
 
 def test_uc_ev_modu(monkeypatch):
-    """Kullanıcı kararı 14 Eki: EV AĞINDA → ECE_PC 35B · think AÇIK · bağlam sınırı YOK."""
+    """EV AĞINDA → ECE_PC 35B · **think KAPALI** · **bağlam sınırı YOK** (kullanıcı kararı).
+    Kontrollü A/B (ECE_PC boş, 3'er tekrar): sınırsız 74,3 tok/s ↔ ctx=16384 67,7 tok/s → sınır
+    koymak kazandırmıyor; ayrıca her ctx değişimi 161–171 sn'lik model yeniden yüklemesi demek."""
     monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
     u = sh.uc()
     assert u["mod"] == "ev" and u["url"] == sh.EV_URL and u["model"] == sh.EV_MODEL
-    assert u["think"] is True and u["ctx"] is None and u["en_fazla"] == 3000
+    assert u["think"] is False and u["ctx"] is None and u["en_fazla"] == 4000
+
+
+def test_ev_modu_baglam_acikca_verilirse(monkeypatch):
+    """`FMS200_CHAT_CTX=8192` → istemde bağlam sınırı gönderilir (varsayılan 0 = sınır yok)."""
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    monkeypatch.setenv("FMS200_CHAT_CTX", "8192")
+    assert sh.uc()["ctx"] == 8192
+
+
+def test_ev_modu_think_acilirsa_butce_de_yukselir(monkeypatch):
+    """`FMS200_CHAT_THINK=1`: think açılır **ve** bütçe 8000'e çıkar (yoksa muhakeme yanıtı kesiyor)."""
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    monkeypatch.setenv("FMS200_CHAT_THINK", "1")
+    u = sh.uc()
+    assert u["think"] is True and u["en_fazla"] == 8000
 
 
 def test_uc_yerel_modu(monkeypatch):
@@ -345,6 +363,164 @@ def test_dusunme_metni_yanit_yerine_konmaz(monkeypatch):
     assert "düşünme bütçesini tüketti" in m["yanit"]
 
 
+def test_dusunme_butcesi_yetmezse_dusunmesiz_tekrar_sorulur(monkeypatch):
+    """ÖLÇÜLDÜ (14 Eki, 35B + think=true + 3000 token): üretimin tamamı muhakemeye gitti →
+    aynı soruda 81 sn boş, 98 sn 31 karakter ('Verilen kaynaklara göre FMS-2'), 240 sn dolgun.
+    Kullanıcı bunu 'dondu' görüyor. Çare: kısa/boş yanıtta **bir kez** düşünmesiz sor."""
+    monkeypatch.setattr(sh, "uc", lambda: {"url": "http://x", "model": "m", "think": True,
+                                            "ctx": None, "en_fazla": 3000, "timeout": 60,
+                                            "mod": "ev"})
+    cagrilar: list[bool] = []
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
+        cagrilar.append(think)
+        if think:                                                      # düşünen tur: kesik yanıt
+            return {"message": {"content": "Verilen kaynaklara göre FMS-2",
+                                "thinking": "uzun muhakeme " * 200},
+                    "eval_count": 3000, "total_duration": 2_000_000_000}
+        return {"message": {"content": "FMS-203 hidrolik pres 3. istasyondadır [FMS203_DURUM, sayfa 1]."},
+                "eval_count": 40, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("FMS-203 nedir?", "bağlam")
+    assert cagrilar == [True, False], "önce düşünen, sonra düşünmesiz sorulmalı"
+    assert m["think_yedek"] is True
+    assert "3. istasyondadır" in m["yanit"] and "FMS-2  " not in m["yanit"]
+
+
+def test_yeterli_yanitta_tekrar_sorulmaz(monkeypatch):
+    monkeypatch.setattr(sh, "uc", lambda: {"url": "http://x", "model": "m", "think": True,
+                                           "ctx": None, "en_fazla": 3000, "timeout": 60, "mod": "ev"})
+    cagrilar: list[bool] = []
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
+        cagrilar.append(think)
+        return {"message": {"content": "FMS-203 hidrolik pres 3. istasyondadır. " * 4},
+                "eval_count": 60, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("FMS-203 nedir?", "bağlam")
+    assert cagrilar == [True] and m["think_yedek"] is False, "yeterli yanıtta ikinci istek olmamalı"
+
+
+def test_liste_niyeti_tabloyu_tasiyan_dilimi_getirir(tmp_path, monkeypatch):
+    """ÖLÇÜLDÜ (14 Eki, kullanıcı testi): "modül listesi" sorusunda MODUL_LISTESI'nin TABLOYU
+    TAŞIMAYAN dilimi geliyordu (1300 kr dilim → tablonun yalnız 1–5. satırı) → model "liste eksik"
+    diyordu. Liste niyetinde tablo dilimi öne alınmalı ve belgeden 4 dilime izin verilmeli."""
+    root = os.path.join(str(tmp_path), "fms200")
+    durum = os.path.join(root, "durum")
+    os.makedirs(durum, exist_ok=True)
+    tablo = ("# FMS-200 — Modül (İstasyon) Numaraları ve Adları\n\n" + "dolgu satırı. " * 60 +
+             "\n| # | Kod | Ad (EN — kanonik) | Ad (TR) |\n|---|---|---|---|\n" +
+             "".join(f"| {i} | **FMS-{200+i}** | Modül {i} | İstasyon {i} |\n" for i in range(1, 12)) +
+             "\n" + "kuyruk metni. " * 60)
+    open(os.path.join(durum, "MODUL_LISTESI.md"), "w", encoding="utf-8").write(tablo)
+    open(os.path.join(durum, "FMS201_DURUM.md"), "w", encoding="utf-8").write("Gövde besleme modülü. " * 40)
+    db = os.path.join(str(tmp_path), "liste.db")
+    bi.build(root=root, db=db, verbose=False)
+
+    baglam, kaynaklar, kr = sh.baglam_kur(db, "FMS-200 modüler eğitim sisteminde hangi modüller var?")
+    assert kaynaklar and kaynaklar[0]["doc"] == "MODUL_LISTESI", "liste niyetinde tablo belgesi öne gelmeli"
+    assert "| 11 | **FMS-211**" in baglam, "tablonun SON satırı da bağlamda olmalı (dilim bütün gelir)"
+    assert "FMS-205" in baglam and "FMS-209" in baglam
+
+
+def test_etiket_satiri_prompta(tmp_path, monkeypatch):
+    """F3: etiket metni modül adı/kodunu taşır ama prompt'a girmiyordu → artık dilim başına girer."""
+    root = os.path.join(str(tmp_path), "fms200")
+    d = os.path.join(root, "dokuman", "Cizimler")
+    os.makedirs(os.path.join(d, "metin"), exist_ok=True)
+    open(os.path.join(d, "metin", "sayfa_001.txt"), "w", encoding="utf-8").write(
+        "rulman seçme besleme modülü çizimi " * 30)
+    db = os.path.join(str(tmp_path), "etiket.db")
+    bi.build(root=root, db=db, verbose=False)
+    con = sqlite3.connect(db)
+    try:
+        con.execute("UPDATE pages SET label=? WHERE doc='Cizimler' AND page=1",
+                    ("FMS-202 · EST.2 rulman besleme / bearing supply [C2/0-0]",))
+        con.commit()
+    finally:
+        con.close()
+
+    baglam, kaynaklar, kr = sh.baglam_kur(db, "rulman seçme besleme modülü çizimi hangi sayfada?")
+    assert "--- ETİKET: FMS-202" in baglam, "etiket satırı prompt'a girmeli"
+    assert any(k.get("etiket") for k in kaynaklar)
+
+
+def test_ek_arama_yalniz_yeni_belge_varsa_ikinci_cagri(client, monkeypatch):
+    """İki optimizasyon (kullanıcı: "uçuca açık soruların süresi çok arttı"):
+    (1) ek arama **YENİ belge** getirmezse ikinci model çağrısı YAPILMAZ (boşuna ~30 sn ödeniyordu);
+    (2) yeni belge geldiySE yapılır ve yanıt güncellenir."""
+    gercek = sh.baglam_kur
+
+    def sahte(db, q, **k):
+        if k.get("yonlendirme") is False:                    # ek arama → YENİ belge
+            return ("--- KAYNAK: YENI_DOC (belge) ---\nKPK-5 = FMS-205 kodudur.",
+                    [{"doc": "YENI_DOC", "page": None, "kr": 30}], 30)
+        return gercek(db, q, **k)
+
+    monkeypatch.setattr(sh, "baglam_kur", sahte)
+    cagri = {"n": 0, "baglamlar": []}
+
+    def taklit(soru, baglam, **k):
+        cagri["n"] += 1
+        cagri["baglamlar"].append(baglam)
+        if cagri["n"] == 1:
+            return {"yanit": "KPK-5 kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0, "tok": 10,
+                    "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                    "arac_sorgulari": [], "think_yedek": False}
+        return {"yanit": "KPK-5, **FMS-205** kodudur [YENI_DOC].", "ham": "", "sure_s": 1.0, "tok": 20,
+                "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                "arac_sorgulari": [], "think_yedek": False}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
+    assert cagri["n"] == 2 and "EK ARAMA SONUÇLARI" in cagri["baglamlar"][1]
+    assert j["ek_arama"] is True and j["ek_arama_yeni"] is True and j["ek_arama_kabul"] is True
+    assert "YENI_DOC" in {k["doc"] for k in j["kaynaklar"]}
+
+
+def test_ek_arama_yeni_belge_yoksa_ikinci_cagri_yapilmaz(client, monkeypatch):
+    """YENİ belge yoksa ikinci model çağrısı yapılmaz (ölçüldü: boşuna 27,9 sn)."""
+    gercek = sh.baglam_kur
+
+    def sahte(db, q, **k):
+        if k.get("yonlendirme") is False:                    # ek arama → AYNI belgeler
+            bag, kay, kr = gercek(db, q, **k)
+            return bag, kay, kr
+        return gercek(db, q, **k)
+
+    monkeypatch.setattr(sh, "baglam_kur", sahte)
+    cagri = {"n": 0}
+
+    def taklit(soru, baglam, **k):
+        cagri["n"] += 1
+        return {"yanit": "Bu bilgi kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0, "tok": 10,
+                "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                "arac_sorgulari": [], "think_yedek": False}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
+    assert cagri["n"] == 1, "yeni belge yoksa ikinci model çağrısı yapılmamalı"
+    assert j["ek_arama"] is True and j["ek_arama_yeni"] is False and j["eksik_beyan"] is True
+
+
+def test_arac_kullanildiysa_ek_arama_yapilmaz(client, monkeypatch):
+    """Model aracı ZATEN çağırdıysa kod ikinci kez aramaz (gereksiz gecikme olmasın)."""
+    cagri = {"n": 0}
+
+    def taklit(soru, baglam, **k):
+        cagri["n"] += 1
+        return {"yanit": "Kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0, "tok": 10,
+                "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                "arac_sorgulari": ["GRAFCET"], "think_yedek": False}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
+    assert cagri["n"] == 1 and j["ek_arama"] is False
+    assert j["arac_sorgulari"] == ["GRAFCET"]
+
+
 def test_durum_uc_bilgisi_verir(client):
     """Durum ucu: hangi modda, hangi model, think açık mı — ECE hiçbir şey ayarlamadan görünür."""
     d = sh.durum()
@@ -385,7 +561,7 @@ def test_metin_bicimli_arac_cagrisi_da_yurutulur(client, monkeypatch):
 
     cagri = {"n": 0}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagri["n"] += 1
         if cagri["n"] == 1:
             return {"message": {"content": '<tool_call>\n<function=arastir_arsiv>{"sorgu": "GRAFCET"}'}}
@@ -403,7 +579,7 @@ def test_duz_bicimli_tool_call_da_calisir(client, monkeypatch):
     `{"index":0,"name":"arastir_arsiv","arguments":{"sorgu":"hidrolik pres"}}` — `function` sarmalayıcısı YOK."""
     cagri = {"n": 0}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagri["n"] += 1
         if cagri["n"] == 1:
             return {"message": {"content": "", "tool_calls": [
@@ -425,7 +601,7 @@ def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):
     sh._ARAC_DESTEK.clear()
     cagri = {"n": 0, "aracli": []}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagri["n"] += 1
         cagri["aracli"].append(araclar)
         if araclar:
