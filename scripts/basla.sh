@@ -22,6 +22,18 @@ if [ ! -f data/fms200.db ]; then
       --root "$ARSIV" --db data/fms200.db
 fi
 
+# Sohbet (💬 Sor) için YEREL model gerekir: ollama + gemma3:4b. Yoksa yalnız sohbet susar, ARAMA çalışır.
+# (Ev ağındaysan uygulama kendiliğinden ECE_PC'deki büyük modele geçer; bu adım okul/çevrimdışı içindir.)
+if command -v ollama >/dev/null 2>&1; then
+  if ! ollama list 2>/dev/null | grep -qE "^gemma3:4b"; then
+    echo "→ sohbet modeli eksik: gemma3:4b indiriliyor (~3,4 GB, internet gerekir)…"
+    ollama pull gemma3:4b || echo "  ⚠️  indirilemedi — sohbet kapalı olur, arama/arayüz tam çalışır."
+  fi
+else
+  echo "ℹ️  ollama bulunamadı: 💬 Sor (sohbet) kapalı olur; arama ve arayüz tam çalışır."
+  echo "    Sohbet istersen: https://ollama.com indir → 'ollama pull gemma3:4b'"
+fi
+
 IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null \
       || hostname -I 2>/dev/null | awk '{print $1}' || echo 127.0.0.1)"
 PORT="${FMS200_PORT:-8765}"
@@ -30,6 +42,7 @@ echo "=============================================================="
 echo "  FMS-200 arşivi yayında.  Telefondan / notebook'tan aç:"
 echo "        http://$IP:$PORT"
 echo "  (aynı wifi ağında olmalı).  Durdurmak için: Ctrl+C"
+echo "  Sohbet: ev ağındaysan otomatik ECE_PC (35B) · değilse yerel gemma3:4b"
 echo "=============================================================="
 FMS200_ROOT="$ARSIV" exec ./.venv/bin/uvicorn fms200_arama.app:app \
     --host 0.0.0.0 --port "$PORT"

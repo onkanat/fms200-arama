@@ -15,6 +15,7 @@ import math
 import os
 import re
 import struct
+import time
 import urllib.request
 
 DIM = 768
@@ -47,7 +48,7 @@ def _cfg():
     return url, model
 
 
-def _server_embed(texts, timeout=90):
+def _server_embed(texts, timeout: float = 90):
     url, model = _cfg()
     payload = {"model": model, "input": list(texts)}
     req = urllib.request.Request(
@@ -89,6 +90,29 @@ def backend_info():
         except Exception:
             pass
     return ("hashing", "", DIM)
+
+
+_RT = {"t": 0.0, "v": None}
+
+
+def runtime_backend(timeout: float = 6.0, ttl: float = 60.0, zorla: bool = False) -> str:
+    """**Çalışma anındaki** gömme arka ucu ('server'|'hashing') — kısa ömürlü önbellekli ping.
+
+    Neden ayrı: `meta` tablosundaki değer **indeks anındaki** arka ucu söyler; sunucu düşünce arama
+    sessizce hashing'e geçebiliyor ve durum bunu göstermiyordu (bkz. search.SON_YEDEK).
+    """
+    if not zorla and _RT["v"] and time.time() - _RT["t"] < ttl:
+        return _RT["v"]
+    url, _ = _cfg()
+    v = "hashing"
+    if url:
+        try:
+            _server_embed(["ping"], timeout=timeout)
+            v = "server"
+        except Exception:
+            v = "hashing"
+    _RT.update(t=time.time(), v=v)
+    return v
 
 
 def to_blob(vec) -> bytes:
