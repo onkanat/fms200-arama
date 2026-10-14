@@ -375,6 +375,37 @@ def arac_destegi(model: str) -> bool | None:
     return _ARAC_DESTEK.get(model)
 
 
+def _metin_arac_cagrilari(icerik: str) -> list[dict]:
+    """Bazı modeller araç çağrısını `tool_calls` alanı yerine **metin** olarak yazar.
+
+    Ölçüldü (nemotron-3-nano:4b): içerik `'<tool_call>\\n<function=arastir_arsiv>'` ile başlıyor ve
+    ollama bunu yapısal çağrıya çevirmiyor. Bu biçimi de yakalarız; aksi hâlde yetenekli model
+    "boşa" çalışır.
+    """
+    out = []
+    for blok in re.findall(r"<tool_call>(.*?)(?:</tool_call>|$)", icerik or "", re.S):
+        m = re.search(r"(?:<function=|[\"']?name[\"']?\s*[:=]\s*[\"']?)([A-Za-z0-9_]+)", blok)
+        if not m:
+            continue
+        ad = m.group(1)
+        args: dict = {}
+        j = re.search(r"\{.*?\}", blok, re.S)
+        if j:
+            try:
+                args = json.loads(j.group())
+            except ValueError:
+                args = {"sorgu": j.group().strip("{} ").strip().strip('"')}
+        if not isinstance(args, dict):
+            args = {"sorgu": str(args)}
+        out.append({"function": {"name": ad, "arguments": args}})
+    return out
+
+
+def _arac_bloklarini_temizle(icerik: str) -> str:
+    """Yanıt metninden araç çağrısı bloklarını çıkarır (kullanıcıya ham etiket gitmesin)."""
+    return re.sub(r"<tool_call>.*?(?:</tool_call>|$)", "", icerik or "", flags=re.S).strip()
+
+
 def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None = None,
               ctx: int | None = None, en_fazla: int | None = None,
               timeout: float | None = None, gorev: bool = False,
@@ -419,10 +450,11 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
             return {"yanit": "", "ham": "", "sure_s": round(time.time() - t0, 1), "hata": SON_HATA,
                     "arac_sorgulari": arac_sorgulari}
         msg = d.get("message") or {}
-        cagrilar = msg.get("tool_calls") or []
+        ham_icerik = msg.get("content") or ""
+        cagrilar = msg.get("tool_calls") or _metin_arac_cagrilari(ham_icerik)
         if not cagrilar:
             break
-        mesajlar.append({"role": "assistant", "content": msg.get("content") or "",
+        mesajlar.append({"role": "assistant", "content": _arac_bloklarini_temizle(ham_icerik),
                          "tool_calls": cagrilar})
         for c in cagrilar:                                  # araç çağrılarını yürüt
             fonk = (c.get("function") or {})
@@ -443,7 +475,8 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
         ham = msg["thinking"]
     n = d.get("eval_count") or 0
     sure = (d.get("total_duration") or 0) / 1e9 or (time.time() - t0)
-    return {"yanit": temizle(ham), "ham": ham, "sure_s": round(time.time() - t0, 1),
+    return {"yanit": temizle(_arac_bloklarini_temizle(ham) or temizle(ham)), "ham": ham,
+            "sure_s": round(time.time() - t0, 1),
             "tok": n, "tok_s": round(n / sure, 1) if sure else None, "model": model, "url": url,
             "hata": None, "arac_sorgulari": arac_sorgulari}
 

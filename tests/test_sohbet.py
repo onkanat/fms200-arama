@@ -252,6 +252,30 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
     assert sayac["n"] == 1 and m["arac_sorgulari"] == []
 
 
+def test_metin_bicimli_arac_cagrisi_da_yurutulur(client, monkeypatch):
+    """ÖLÇÜLDÜ (nemotron-3-nano:4b): araç çağrısını `tool_calls` yerine METİN olarak yazıyor
+    (`<tool_call><function=arastir_arsiv>{"sorgu": "..."}`). Bu biçim de yürütülmeli."""
+    c = sh._metin_arac_cagrilari('<tool_call>\n<function=arastir_arsiv>{"sorgu": "GRAFCET dizi"}')
+    assert c and c[0]["function"]["name"] == "arastir_arsiv"
+    assert c[0]["function"]["arguments"]["sorgu"] == "GRAFCET dizi"
+    assert sh._metin_arac_cagrilari("düz yanıt, araç yok") == []
+    assert "<tool_call>" not in sh._arac_bloklarini_temizle('<tool_call>x</tool_call> Sonuç: 6 kayıt.')
+
+    cagri = {"n": 0}
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+        cagri["n"] += 1
+        if cagri["n"] == 1:
+            return {"message": {"content": '<tool_call>\n<function=arastir_arsiv>{"sorgu": "GRAFCET"}'}}
+        return {"message": {"content": "Kaynakta 6 kayıt var [FMS200_Z, sayfa 1]."},
+                "eval_count": 8, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("kaç kayıt?", "bağlam", db=appmod.DB, araclar=True)
+    assert m["arac_sorgulari"] == ["GRAFCET"] and "6 kayıt" in m["yanit"]
+    assert "<tool_call>" not in m["yanit"]
+
+
 def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):
     """ÖLÇÜLEN ARIZA: gemma3:4b araç desteklemiyor → ollama 400 döndürüyor ve sohbet tamamen
     düşüyordu. Artık bir kez denenir, destek yoksa araçsız sorulur ve özellik çalışır."""
