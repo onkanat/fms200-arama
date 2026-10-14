@@ -5,21 +5,24 @@ belge çeşitliliği, jenerik dossiye freni) → sayfa metninden dilimler → ye
 yanıt + `[belge, sayfa N]` atıfları. Görev cümlelerinde ("... dosyasını yeniden yaz") **taslak**
 üretir; diske yazmaz — kullanıcı düzenleyicide onaylayıp kaydeder.
 
-Ortam değişkenleri:
-  FMS200_CHAT_URL    varsayılan: http://127.0.0.1:11434 (**yerel**; gömme ucundan bağımsız —
-                     gömme başka makinede olabilir, sohbet modeli yerelde olmalı)
-  FMS200_CHAT_MODEL  varsayılan: gemma3:4b   (düşünmeyen model — ölçüm: bkz. arşiv planı)
-  FMS200_CHAT_CTX    bağlam penceresi (varsayılan 4096; 8 GB makinede yükseltme)
-  FMS200_CHAT_MAX    en fazla üretilecek token (varsayılan 600; görev modunda 1400)
-  FMS200_CHAT_TIMEOUT saniye (varsayılan 120)
+Ortam değişkenleri (uç seçimi — kullanıcı kararı 14 Eki 2026):
+  **EV AĞINDA**  → ECE_PC `192.168.1.26:11435` (2×RTX 4060 Ti **16 GB = 32 GB VRAM**) ·
+                 `qwen3.6:35b-a3b-coding-mtp-q4_K_M` · **think AÇIK** · **bağlam sınırı yok**
+                 (modelin sunucudaki ayarı geçerli).
+  **EV AĞI YOK** → yerel küçük model (`gemma3:4b`) · think kapalı · 4096 bağlam (8 GB makine şartı).
+  FMS200_CHAT_URL açıkça verilirse o kullanılır (ölçüm/deneme) — "elle" modu.
+  FMS200_EV_URL / FMS200_EV_MODEL / FMS200_YEREL_URL / FMS200_YEREL_MODEL ile değiştirilebilir;
+  FMS200_CHAT_THINK=1/0, FMS200_CHAT_CTX (0 = sınır yok), FMS200_CHAT_MAX, FMS200_CHAT_TIMEOUT.
 
-**Neden `think=False`:** qwen3 gibi "düşünen" modellerde çıktı bütçesi muhakemeye gidip nihai yanıt
-hiç gelmiyor (ölçüldü: 700 token'da bile yanıt yok). Düşünme bloğu yine de gelirse `_KAPALI`
-işaretinden sonrası alınır.
+**Neden `think`:** ölçüldü (14 Eki, ECE_PC 35B) — `think=true` + 600 token bütçesi → üretimin tamamı
+`thinking` alanına gitti, **yanıt 0 kr**; `think=false` aynı soruda 1893 kr gerçek yanıt verdi. Bu yüzden
+think açıkken bütçe büyük tutulur (`FMS200_CHAT_MAX`, ev modunda 3000) ve **düşünme metni yanıt yerine
+konmaz** (ham muhakeme kullanıcıya gösterilmez).
 """
 import json
 import os
 import re
+import socket
 import sqlite3
 import time
 import urllib.error
@@ -118,20 +121,79 @@ _AD_ESLEME = (
 
 SON_HATA = None                          # son sohbet çağrısı hatası (durum için)
 
+# --- Uç/model seçimi (kullanıcı kararı 14 Eki 2026) -------------------------------------------
+EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11435")          # ECE_PC · büyük modeller
+EV_MODEL = os.environ.get("FMS200_EV_MODEL", "qwen3.6:35b-a3b-coding-mtp-q4_K_M")
+YEREL_URL = os.environ.get("FMS200_YEREL_URL", "http://127.0.0.1:11434")
+YEREL_MODEL = os.environ.get("FMS200_YEREL_MODEL", "gemma3:4b")
+_EV_ONBELLEK: dict = {"zaman": 0.0, "var": False}
+_BOS_UYARI = ("(Model bu turda yanıt üretmedi — düşünme bütçesini tüketti. Soruyu kısaltıp "
+              "tekrar deneyin.)")
+
+
+def _sayi(ad: str, varsayilan: int) -> int:
+    try:
+        return int(os.environ.get(ad, str(varsayilan)))
+    except ValueError:                                          # pragma: no cover
+        return varsayilan
+
+
+def _tcp_acik(url: str, timeout: float = 1.5) -> bool:
+    """Uçtaki TCP kapısı açık mı? (yalnız bağlantı denemesi; HTTP isteği yapılmaz)"""
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    if not u.hostname:
+        return False
+    try:
+        with socket.create_connection((u.hostname, u.port or 11434), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ev_agi_var(ttl: float = 60.0) -> bool:
+    """Ev ağında mıyız: ECE_PC'nin ucu erişilebilir mi? (60 sn önbellek → istek başına gecikme yok)"""
+    simdi = time.time()
+    if simdi - _EV_ONBELLEK["zaman"] < ttl:
+        return _EV_ONBELLEK["var"]
+    var = _tcp_acik(EV_URL)
+    _EV_ONBELLEK.update({"zaman": simdi, "var": var})
+    return var
+
+
+def uc() -> dict:
+    """Aktif sohbet ucu.
+
+    {url, model, think, ctx, en_fazla, timeout, mod} · `ctx=None` → **bağlam sınırı gönderilmez**
+    (modelin sunucudaki ayarı geçerli). `mod`: "ev" | "yerel" | "elle".
+    """
+    if os.environ.get("FMS200_CHAT_URL"):                        # açıkça verilen uç → dokunma
+        ctx = _sayi("FMS200_CHAT_CTX", 4096)
+        return {"url": os.environ["FMS200_CHAT_URL"].rstrip("/"),
+                "model": os.environ.get("FMS200_CHAT_MODEL", YEREL_MODEL),
+                "think": os.environ.get("FMS200_CHAT_THINK", "0") == "1",
+                "ctx": (ctx if ctx > 0 else None),
+                "en_fazla": _sayi("FMS200_CHAT_MAX", 600),
+                "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "elle"}
+    if ev_agi_var():                                             # EV: büyük model, think açık, sınırsız bağlam
+        return {"url": EV_URL, "model": os.environ.get("FMS200_EV_MODEL", EV_MODEL),
+                "think": os.environ.get("FMS200_CHAT_THINK", "1") == "1",
+                "ctx": None,
+                "en_fazla": _sayi("FMS200_CHAT_MAX", 3000),
+                "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 600)), "mod": "ev"}
+    return {"url": YEREL_URL,
+            "model": (os.environ.get("FMS200_CHAT_MODEL")            # ölçüm/test yolu: tek model adı yeter
+                      or os.environ.get("FMS200_YEREL_MODEL") or YEREL_MODEL),
+            "think": os.environ.get("FMS200_CHAT_THINK", "0") == "1",
+            "ctx": _sayi("FMS200_CHAT_CTX", 4096) or None,
+            "en_fazla": _sayi("FMS200_CHAT_MAX", 600),
+            "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "yerel"}
+
 
 def cfg() -> tuple[str, str, int, int, float]:
-    # Sohbet ucu **varsayılan olarak YEREL**tir (okul/çevrimdışı senaryosunun şartı); gömme ucu
-    # başka makinede olabilir, bu yüzden FMS200_EMBED_URL'e DÜŞÜLMEZ. Uzak model kullanmak
-    # isteniyorsa FMS200_CHAT_URL açıkça verilir.
-    url = (os.environ.get("FMS200_CHAT_URL") or "http://127.0.0.1:11434").rstrip("/")
-    model = os.environ.get("FMS200_CHAT_MODEL", "gemma3:4b")
-    try:
-        ctx = int(os.environ.get("FMS200_CHAT_CTX", "4096"))
-        mx = int(os.environ.get("FMS200_CHAT_MAX", "600"))
-        to = float(os.environ.get("FMS200_CHAT_TIMEOUT", "120"))
-    except ValueError:                                          # pragma: no cover
-        ctx, mx, to = 4096, 600, 120.0
-    return url, model, max(512, ctx), max(64, mx), to
+    """Geriye uyumluluk: etkin ucu (url, model, ctx, en_fazla, timeout) olarak döndürür."""
+    u = uc()
+    return u["url"], u["model"], u["ctx"] or 4096, u["en_fazla"], u["timeout"]
 
 
 # ------------------------------------------------------------------ yönlendirme
@@ -341,16 +403,20 @@ def _arac_calistir(db: str | None, ad: str, args: dict) -> str:
     return baglam
 
 
-def _ollama_chat(mesajlar: list[dict], model: str, ctx: int, en_fazla: int,
-                 timeout: float, url: str, araclar: bool = False) -> dict:
+def _ollama_chat(mesajlar: list[dict], model: str, ctx: int | None, en_fazla: int,
+                 timeout: float, url: str, araclar: bool = False, think: bool = False) -> dict:
     """Tek HTTP isteği; yanıt gövdesini döndürür.
 
+    `ctx=None` → `num_ctx` **gönderilmez** (modelin sunucudaki bağlam ayarı geçerli olur).
     Hata: {'_hata': ...} · araç **desteklenmiyorsa**: {'_hata':..., '_destek_yok': True}
     (ollama, araç desteklemeyen modelde HTTP 400 + \"does not support tools\" döndürüyor —
     ölçüldü: gemma3:4b. Bu yüzden araç göndermek modeli TAMAMEN düşürebiliyor.)
     """
-    govde = {"model": model, "stream": False, "think": False, "messages": mesajlar,
-             "options": {"num_ctx": ctx, "temperature": 0.2, "num_predict": en_fazla},
+    secenekler: dict = {"temperature": 0.2, "num_predict": en_fazla}
+    if ctx is not None:
+        secenekler["num_ctx"] = ctx
+    govde = {"model": model, "stream": False, "think": think, "messages": mesajlar,
+             "options": secenekler,
              "keep_alive": "5m"}
     if araclar:
         govde["tools"] = ARACLAR
@@ -419,12 +485,13 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     Döner: {yanit, ham, sure_s, tok, tok_s, hata, arac_sorgulari}
     """
     global SON_HATA
-    url0, model0, ctx0, mx0, to0 = cfg()
-    url = (url or url0).rstrip("/")
-    model = model or model0
-    ctx = ctx or ctx0
-    en_fazla = en_fazla or mx0
-    timeout = timeout or to0
+    u = uc()
+    url = (url or u["url"]).rstrip("/")
+    model = model or u["model"]
+    ctx = ctx if ctx is not None else u["ctx"]          # None = bağlam sınırı gönderilmez (ev modu)
+    en_fazla = en_fazla or u["en_fazla"]
+    timeout = timeout or u["timeout"]
+    think = u["think"]
     kullanici = (f"GÖREV: {soru}\n\nMEVCUT İÇERİK:\n{baglam}" if gorev
                  else f"SORU: {soru}\n\nKAYNAKLAR:\n{baglam}")
     mesajlar: list[dict] = [{"role": "system", "content": SISTEM_GOREV if gorev else SISTEM}]
@@ -440,12 +507,14 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     d = {}
     for tur in range(max(1, arac_tur + 1)):
         araclari_gonder = kullan_arac and tur < arac_tur
-        d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclari_gonder)
+        d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclari_gonder,
+                         think=think)
         if d.get("_destek_yok"):
             _ARAC_DESTEK[model] = False                     # modele not düş, tekrar denemeyelim
             kullan_arac = False
             araclari_gonder = False
-            d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False)
+            d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
+                             think=think)
         elif araclari_gonder:
             _ARAC_DESTEK.setdefault(model, True)            # araç kabul edildi
         if d.get("_hata"):
@@ -478,13 +547,18 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     SON_HATA = None
     msg = d.get("message") or {}
     ham = msg.get("content") or ""
-    if not ham and msg.get("thinking"):                     # bazı modeller düşünmeyi ayrı verir
-        ham = msg["thinking"]
+    dusunme_kr = len(msg.get("thinking") or "")
+    if not ham and think:
+        # Düşünme metni YANIT YERİNE KONMAZ (kullanıcı kararı 14 Eki): ham muhakeme gösterilmez.
+        ham = _BOS_UYARI
+    elif not ham and dusunme_kr:
+        ham = _BOS_UYARI                                   # think kapalıyken de muhakeme gösterilmez
     n = d.get("eval_count") or 0
     sure = (d.get("total_duration") or 0) / 1e9 or (time.time() - t0)
     return {"yanit": temizle(_arac_bloklarini_temizle(ham) or temizle(ham)), "ham": ham,
             "sure_s": round(time.time() - t0, 1),
             "tok": n, "tok_s": round(n / sure, 1) if sure else None, "model": model, "url": url,
+            "dusunme_kr": dusunme_kr, "bos": not (d.get("message") or {}).get("content"),
             "hata": None, "arac_sorgulari": arac_sorgulari}
 
 
@@ -566,11 +640,13 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
             return {"ok": False, "sebep": f"{hedef} boş/okunamadı", "yanit": "",
                     "kaynaklar": [], "atiflar": [], "taslak_doc": hedef}
         # Görev modu uzun sürer (tüm döküman bağlamda): ayrı, daha geniş zaman aşımı.
+        # Ev modu (think açık + büyük model) için taban daha yüksek.
         try:
-            to_gorev = float(os.environ.get("FMS200_CHAT_TIMEOUT_GOREV", "300"))
+            to_gorev = float(os.environ.get("FMS200_CHAT_TIMEOUT_GOREV", str(max(300, uc()["timeout"]))))
         except ValueError:                                        # pragma: no cover
             to_gorev = 300.0
-        m = model_sor(q, icerik, model=model, ctx=ctx, en_fazla=en_fazla or 1400,
+        gorev_butce = 4000 if uc()["mod"] == "ev" else 1400       # think açıkken muhakeme+b taslak
+        m = model_sor(q, icerik, model=model, ctx=ctx, en_fazla=en_fazla or gorev_butce,
                       gorev=True, timeout=to_gorev)
         if m.get("hata"):
             return {"ok": False, "sebep": f"sohbet modeli yok ({m['hata']}) — yalnız arama",
@@ -614,8 +690,12 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
 
 
 def durum() -> dict:
-    """Arayüz/durum ucu için: yapılandırma + son hata + araç desteği (ağ çağrısı YAPMAZ)."""
-    url, model, ctx, mx, _ = cfg()
-    return {"url": url, "model": model, "ctx": ctx, "en_fazla": mx,
+    """Arayüz/durum ucu için: yapılandırma + son hata + araç desteği.
+
+    Ağ ölçümü **önbellekli** (60 sn) yapılır → uç, "ev"/"yerel" modu ve think durumu görünür olur.
+    """
+    u = uc()
+    return {"url": u["url"], "model": u["model"], "ctx": u["ctx"], "en_fazla": u["en_fazla"],
+            "think": u["think"], "mod": u["mod"], "ev_agi": ev_agi_var(),
             "son_hata": SON_HATA, "hazir": SON_HATA is None,
-            "arac_destek": arac_destegi(model)}          # None = henüz denenmedi
+            "arac_destek": arac_destegi(u["model"])}     # None = henüz denenmedi

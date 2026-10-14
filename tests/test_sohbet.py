@@ -1,4 +1,5 @@
 """Sohbet (RAG) katmanı testleri — ağ YOK: model çağrısı monkeypatch ile taklit edilir."""
+import json
 import os
 
 import pytest
@@ -7,6 +8,19 @@ from fastapi.testclient import TestClient
 from fms200_arama import app as appmod
 from fms200_arama import build_index as bi
 from fms200_arama import sohbet as sh
+
+_GERCEK_EV_AGI_VAR = sh.ev_agi_var          # autouse fixture bunu taklit eder; önbellek testi gerçeğini kurar
+
+
+@pytest.fixture(autouse=True)
+def _yerel_mod(monkeypatch):
+    """Testler GERÇEK ağa çıkmasın: ev ağı ölçümü sabitlenir (varsayılan: ev ağı yok → yerel mod).
+
+    `uc()` normalde `192.168.1.26:11435`'e TCP denemesi yapar; testlerde bu deterministik olmalı.
+    """
+    monkeypatch.delenv("FMS200_CHAT_URL", raising=False)
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: False)
+    return False
 
 
 @pytest.fixture()
@@ -220,7 +234,7 @@ def test_model_arac_cagrisini_yurutur(client, monkeypatch):
     """Araç destekli model `arastir_arsiv` çağırırsa: araç çalışır, ikinci turda yanıt gelir."""
     cagrilar = []
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
         cagrilar.append(mesajlar)
         if len(cagrilar) == 1:
             assert araclar is True, "ilk turda araç tanımı gönderilmeli"
@@ -250,6 +264,94 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
     monkeypatch.setattr(sh, "_ollama_chat", taklit)
     m = sh.model_sor("soru", "bağlam", db=appmod.DB, araclar=False)
     assert sayac["n"] == 1 and m["arac_sorgulari"] == []
+
+
+def test_uc_ev_modu(monkeypatch):
+    """Kullanıcı kararı 14 Eki: EV AĞINDA → ECE_PC 35B · think AÇIK · bağlam sınırı YOK."""
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    u = sh.uc()
+    assert u["mod"] == "ev" and u["url"] == sh.EV_URL and u["model"] == sh.EV_MODEL
+    assert u["think"] is True and u["ctx"] is None and u["en_fazla"] == 3000
+
+
+def test_uc_yerel_modu(monkeypatch):
+    """EV AĞI YOK → yerel küçük model, think kapalı, 4096 bağlam (8 GB makine şartı)."""
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: False)
+    u = sh.uc()
+    assert u["mod"] == "yerel" and u["model"] == sh.YEREL_MODEL and u["think"] is False
+    assert u["ctx"] == 4096 and u["en_fazla"] == 600
+
+
+def test_uc_elle_override(monkeypatch):
+    """FMS200_CHAT_URL açıkça verilirse dokunulmaz (ölçüm/deneme yolu); think env'den gelir."""
+    monkeypatch.setenv("FMS200_CHAT_URL", "http://127.0.0.1:11434")
+    monkeypatch.setenv("FMS200_CHAT_MODEL", "elle-model")
+    monkeypatch.setenv("FMS200_CHAT_THINK", "1")
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    u = sh.uc()
+    assert u["mod"] == "elle" and u["model"] == "elle-model" and u["think"] is True
+
+
+def test_ev_agi_olcumu_onbellekli(monkeypatch):
+    """Ağ ölçümü 60 sn önbelleklenir → istek başına gecikme olmaz; sayım kanıtı."""
+    sayac = {"n": 0}
+
+    def taklit(url, timeout=1.5):
+        sayac["n"] += 1
+        return True
+
+    monkeypatch.setattr(sh, "ev_agi_var", _GERCEK_EV_AGI_VAR)      # fixture taklidini gerçekle değiştir
+    monkeypatch.setattr(sh, "_tcp_acik", taklit)
+    monkeypatch.setattr(sh, "_EV_ONBELLEK", {"zaman": 0.0, "var": False})
+    assert sh.ev_agi_var() is True and sh.ev_agi_var() is True
+    assert sayac["n"] == 1, "ikinci çağrı önbellekten gelmeli"
+
+
+def test_ollama_chat_govdesi_think_ve_baglam_siniri(monkeypatch):
+    """think gövdeye geçer; ctx None ise num_ctx GÖNDERİLMEZ (sunucu ayarı geçerli)."""
+    yakalanan: dict = {}
+
+    class _R:
+        def read(self):
+            return json.dumps({"message": {"content": "ok"}}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=None):
+        yakalanan.clear()
+        yakalanan.update(json.loads(req.data.decode()))
+        return _R()
+
+    monkeypatch.setattr(sh.urllib.request, "urlopen", urlopen)
+    sh._ollama_chat([{"role": "user", "content": "x"}], "m", None, 100, 10, "http://x", think=True)
+    assert yakalanan["think"] is True and "num_ctx" not in yakalanan["options"]
+    sh._ollama_chat([{"role": "user", "content": "x"}], "m", 4096, 100, 10, "http://x", think=False)
+    assert yakalanan["think"] is False and yakalanan["options"]["num_ctx"] == 4096
+
+
+def test_dusunme_metni_yanit_yerine_konmaz(monkeypatch):
+    """Ölçüldü (35B + think=true, 600 bütçe): yanıt 0 kr, üretim `thinking`'e gitti.
+    Ham muhakeme kullanıcıya GÖSTERİLMEZ; net bir uyarı döner."""
+    monkeypatch.setattr(sh, "_ollama_chat", lambda *a, **k: {
+        "message": {"content": "", "thinking": "ADIM ADIM MUHAKEME: önce şunu düşünelim " * 40},
+        "eval_count": 600, "total_duration": 1_000_000_000})
+    m = sh.model_sor("soru", "bağlam")
+    assert "MUHAKEME" not in m["yanit"], "düşünme metni yanıt olarak dönmemeli"
+    assert m["bos"] is True and m["dusunme_kr"] > 0
+    assert "düşünme bütçesini tüketti" in m["yanit"]
+
+
+def test_durum_uc_bilgisi_verir(client):
+    """Durum ucu: hangi modda, hangi model, think açık mı — ECE hiçbir şey ayarlamadan görünür."""
+    d = sh.durum()
+    assert d["mod"] == "yerel" and d["think"] is False
+    assert d["model"] == "test-model", "FMS200_CHAT_MODEL verilirse yerel model adı o olur"
+    j = client.get("/api/status").json()["sohbet"]
+    assert j["mod"] == "yerel" and j["think"] is False and "en_fazla" in j
 
 
 def test_atifsiz_yanita_kaynak_kod_ekler(client, monkeypatch):
@@ -283,7 +385,7 @@ def test_metin_bicimli_arac_cagrisi_da_yurutulur(client, monkeypatch):
 
     cagri = {"n": 0}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
         cagri["n"] += 1
         if cagri["n"] == 1:
             return {"message": {"content": '<tool_call>\n<function=arastir_arsiv>{"sorgu": "GRAFCET"}'}}
@@ -301,7 +403,7 @@ def test_duz_bicimli_tool_call_da_calisir(client, monkeypatch):
     `{"index":0,"name":"arastir_arsiv","arguments":{"sorgu":"hidrolik pres"}}` — `function` sarmalayıcısı YOK."""
     cagri = {"n": 0}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
         cagri["n"] += 1
         if cagri["n"] == 1:
             return {"message": {"content": "", "tool_calls": [
@@ -323,7 +425,7 @@ def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):
     sh._ARAC_DESTEK.clear()
     cagri = {"n": 0, "aracli": []}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
         cagri["n"] += 1
         cagri["aracli"].append(araclar)
         if araclar:
