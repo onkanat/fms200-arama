@@ -350,7 +350,9 @@ async function sor(){
     $("#view").innerHTML = `<div class="ask">
       <div class="sor">💬 ${esc(q)} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${r.kaynaklar.length} kaynak (${r.baglam_kr} kr) · ${ms} ms</div>
       ${arastirma}
-      ${r.ek_arama?'<div class="hata" style="color:#8a93a6">🔎 model bağlamı yetersiz buldu → <b>koddan ek arama</b> yapıldı'+(r.ek_arama_kabul?' ve <b>yanıt güncellendi</b>':' (yeni bilgi çıkmadı, yanıt aynı kaldı)')+'</div>':""}
+      ${r.ek_arama?'<div class="hata" style="color:#8a93a6">🔎 model bağlamı yetersiz buldu → <b>koddan ek arama</b> yapıldı'+(r.ek_arama_kabul?' ve <b>yanıt güncellendi</b>':(r.ek_arama_yeni?' (yeni belgeler geldi, yanıt değişmedi)':' (yeni belge çıkmadı)'))+'</div>':""}
+      ${r.eksik_beyan?`<div class="hata" style="color:#ffce6a">📄 Yanıt "arşivde yok" diyor — <b>aşağıdaki belge adına tıkla</b> ve kendin bak: ${
+        (r.kaynaklar||[]).slice(0,4).map(k=>`<span class="at" data-doc="${esc(k.doc)}" data-page="${k.page??''}">📄 ${esc(k.doc)}</span>`).join(" ")}</div>`:""}
       ${r.think_yedek?'<div class="hata" style="color:#8a93a6">ℹ️ düşünme bütçesi yetmedi → yanıt <b>düşünmesiz</b> yeniden sorularak alındı</div>':""}
       <div class="yanit">${esc(r.yanit||"(boş yanıt)")}</div>
       ${r["atıfsız"]?'<div class="hata">⚠ yanıt atıf içermiyor — kaynak sayfasını kendin doğrula</div>':""}

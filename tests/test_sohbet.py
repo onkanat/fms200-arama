@@ -268,12 +268,20 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
 
 
 def test_uc_ev_modu(monkeypatch):
-    """EV AĞINDA → ECE_PC 35B · bağlam sınırı YOK · **think varsayılan KAPALI**.
-    Ölçüm (14 Eki): think=true 81–240 sn ve boş/kesik yanıt; think=false 0,2–15,7 sn ve 15/15."""
+    """EV AĞINDA → ECE_PC 35B · **think KAPALI** · **bağlam 16.384** (sınır-yok 9× yavaştı).
+    Ölçüm (14 Eki): think=true 81–240 sn ve boş/kesik yanıt; think=false 0,2–15,7 sn ve 15/15.
+    num_ctx gönderilmezse 7,6 tok/s ↔ 4096 ile 71,4 tok/s."""
     monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
     u = sh.uc()
     assert u["mod"] == "ev" and u["url"] == sh.EV_URL and u["model"] == sh.EV_MODEL
-    assert u["think"] is False and u["ctx"] is None and u["en_fazla"] == 3000
+    assert u["think"] is False and u["ctx"] == 16384 and u["en_fazla"] == 4000
+
+
+def test_ev_modu_baglam_sinirsiz_istenirse(monkeypatch):
+    """`FMS200_CHAT_CTX=0` → bağlam sınırı yok (kullanıcı ısrarı / ölçüm karşılaştırması için)."""
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    monkeypatch.setenv("FMS200_CHAT_CTX", "0")
+    assert sh.uc()["ctx"] is None
 
 
 def test_ev_modu_think_acilirsa_butce_de_yukselir(monkeypatch):
@@ -439,28 +447,62 @@ def test_etiket_satiri_prompta(tmp_path, monkeypatch):
     assert any(k.get("etiket") for k in kaynaklar)
 
 
-def test_eksik_yanitta_koddan_ek_arama_yapilir(client, monkeypatch):
-    """ÖLÇÜLDÜ (14 Eki, kullanıcı gözlemi): model "bağlamda eksik" diyor ama `arastir_arsiv`
-    aracını KENDİLİĞİNDEN çağırmıyor → kullanıcı eksik yanıt alıyor. Çare: kod bir kez ek arama
-    yapar ve yeniden sorar; yeni yanıt eksiklik iddiasını sürdürmüyorsa kabul edilir."""
+def test_ek_arama_yalniz_yeni_belge_varsa_ikinci_cagri(client, monkeypatch):
+    """İki optimizasyon (kullanıcı: "uçuca açık soruların süresi çok arttı"):
+    (1) ek arama **YENİ belge** getirmezse ikinci model çağrısı YAPILMAZ (boşuna ~30 sn ödeniyordu);
+    (2) yeni belge geldiySE yapılır ve yanıt güncellenir."""
+    gercek = sh.baglam_kur
+
+    def sahte(db, q, **k):
+        if k.get("yonlendirme") is False:                    # ek arama → YENİ belge
+            return ("--- KAYNAK: YENI_DOC (belge) ---\nKPK-5 = FMS-205 kodudur.",
+                    [{"doc": "YENI_DOC", "page": None, "kr": 30}], 30)
+        return gercek(db, q, **k)
+
+    monkeypatch.setattr(sh, "baglam_kur", sahte)
     cagri = {"n": 0, "baglamlar": []}
 
     def taklit(soru, baglam, **k):
         cagri["n"] += 1
         cagri["baglamlar"].append(baglam)
         if cagri["n"] == 1:
-            return {"yanit": "KPK-5 kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0,
-                    "tok": 10, "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+            return {"yanit": "KPK-5 kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0, "tok": 10,
+                    "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
                     "arac_sorgulari": [], "think_yedek": False}
-        return {"yanit": "KPK-5, **FMS-205** (kapak seçme) istasyonunun kodudur [FMS200_Z, sayfa 1].",
-                "ham": "", "sure_s": 1.0, "tok": 20, "tok_s": 10.0, "model": "m", "url": "http://x",
-                "hata": None, "arac_sorgulari": [], "think_yedek": False}
+        return {"yanit": "KPK-5, **FMS-205** kodudur [YENI_DOC].", "ham": "", "sure_s": 1.0, "tok": 20,
+                "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                "arac_sorgulari": [], "think_yedek": False}
 
     monkeypatch.setattr(sh, "model_sor", taklit)
     j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
-    assert cagri["n"] == 2, "model aracı çağırmadıysa kod bir kez daha sormalıydı"
-    assert "EK ARAMA SONUÇLARI" in cagri["baglamlar"][1], "ikinci istem ek arama bağlamını taşımalı"
-    assert j["ek_arama"] is True and j["ek_arama_kabul"] is True and "FMS-205" in j["yanit"]
+    assert cagri["n"] == 2 and "EK ARAMA SONUÇLARI" in cagri["baglamlar"][1]
+    assert j["ek_arama"] is True and j["ek_arama_yeni"] is True and j["ek_arama_kabul"] is True
+    assert "YENI_DOC" in {k["doc"] for k in j["kaynaklar"]}
+
+
+def test_ek_arama_yeni_belge_yoksa_ikinci_cagri_yapilmaz(client, monkeypatch):
+    """YENİ belge yoksa ikinci model çağrısı yapılmaz (ölçüldü: boşuna 27,9 sn)."""
+    gercek = sh.baglam_kur
+
+    def sahte(db, q, **k):
+        if k.get("yonlendirme") is False:                    # ek arama → AYNI belgeler
+            bag, kay, kr = gercek(db, q, **k)
+            return bag, kay, kr
+        return gercek(db, q, **k)
+
+    monkeypatch.setattr(sh, "baglam_kur", sahte)
+    cagri = {"n": 0}
+
+    def taklit(soru, baglam, **k):
+        cagri["n"] += 1
+        return {"yanit": "Bu bilgi kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0, "tok": 10,
+                "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                "arac_sorgulari": [], "think_yedek": False}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
+    assert cagri["n"] == 1, "yeni belge yoksa ikinci model çağrısı yapılmamalı"
+    assert j["ek_arama"] is True and j["ek_arama_yeni"] is False and j["eksik_beyan"] is True
 
 
 def test_arac_kullanildiysa_ek_arama_yapilmaz(client, monkeypatch):

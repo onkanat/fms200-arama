@@ -136,8 +136,9 @@ SON_HATA = None                          # son sohbet çağrısı hatası (durum
 # Ölçüldü (14 Eki): bu sorularda bağlama MODUL_LISTESI'nin TABLOYU TAŞIMAYAN dilimi geliyordu
 # → model doğru davranıp "liste eksik" diyordu. Niyet tespiti tabloyu öne almak için.
 _LISTE_RE = re.compile(r"mod(ü|u)l\s*(listesi|listen|isimleri|adları)|hangi\s+mod(ü|u)l|ka(ç|c)\s+mod(ü|u)l"
-                        r"|mod(ü|u)lleri\s*(say|listele|yaz)|istasyon\s*listesi|listeyi\s*(yaz|incele)"
-                        r"|d(ö|o)k(ü|u)man(ı|i)\s*(incele|oku|yaz)", re.I)
+                        r"|mod(ü|u)lleri\s*(say|listele|yaz|göster)|istasyon\s*listesi|listeyi\s*(yaz|incele|tamamla)"
+                        r"|liste\s*(eksik|tamamla)|tam\s*listesi|d(ö|o)k(ü|u)man(ı|i)?\s*(incele|oku|yaz|görüntüle|aç)"
+                        r"|modul[_ ]?listesi|modül[_ ]?listesi", re.I)
 
 # --- Uç/model seçimi (kullanıcı kararı 14 Eki 2026) -------------------------------------------
 EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11435")          # ECE_PC · büyük modeller
@@ -205,9 +206,15 @@ def uc() -> dict:
         # yalnız 1–5. satırını taşıyor → model "liste eksik" diyor (uydurmuyor). Ev modunda:
         # bağlam 24.000 kr · dilim 2000 kr · dilim sayısı 6 · en çok 8 dilim.
         think = os.environ.get("FMS200_CHAT_THINK", "0") == "1"
+        # BAĞLAM: `num_ctx` GÖNDERİLMEMEK hızı 9× yiyordu (ölçüldü 14 Eki, aynı soru):
+        #   num_ctx yok → 7,6 tok/s (sunucu varsayılanı = dev KV önbelleği)
+        #   num_ctx=4096 → 71,4 tok/s (ilk çağrıda 185 sn model yeniden yükleme, tek seferlik)
+        # Kullanıcı "sınır yok" demişti; ölçüm aykırı olduğu için varsayılan 16.384'e çekildi
+        # (24.000 kr bağlam ≈ 6 bin token + yanıt 4.000 token → rahat sığar). Sınırsız isteyen 0 verir.
+        ctx_ayar = _sayi("FMS200_CHAT_CTX", 16384)
         return {"url": EV_URL, "model": os.environ.get("FMS200_EV_MODEL", EV_MODEL),
-                "think": think, "ctx": None,
-                "en_fazla": _sayi("FMS200_CHAT_MAX", 8000 if think else 3000),
+                "think": think, "ctx": (ctx_ayar if ctx_ayar > 0 else None),
+                "en_fazla": _sayi("FMS200_CHAT_MAX", 8000 if think else 4000),
                 "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 600)), "mod": "ev",
                 # Bağlamı SICAK tut: ölçüldü — model boşaldıktan sonra ilk soru 179,9 sn / 2,7 tok/s
                 # (22 GB yeniden yükleme), sıcakken 5,1 sn / 66,2 tok/s. "Donma" görüntüsünün asıl kaynağı.
@@ -751,23 +758,30 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
     atiflar = _atif_esle(m["yanit"], kaynaklar)
     yanit = m["yanit"]
     # --- Deterministik ek arama (14 Eki): model "bağlamda yok/eksik" dedi ama ARACI ÇAĞIRMADIYSA
-    # koddan bir kez daha ara ve tekrar sor. Model tercihine bırakılmaz (ölçüm: kendiliğinden
-    # çağırmıyor). Yeni yanıt eksiklik iddiasını sürdürüyorsa **eski yanıt korunur** (kötüleştirmez).
-    ek_arama, ek_arama_kabul = False, False
+    # koddan bir kez daha ara. İKİ OPTİMİZASYON (kullanıcı: "uçuca açık soruların süresi çok arttı"):
+    #   1. Yalnız **YENİ belge** geldiyse ikinci model çağrısı yapılır — aksi hâlde boşuna ~30 sn
+    #      ödenir (ölçüldü: "MODUL_LISTESI Dökümanını görüntüle" → ek arama yeni bilgi getirmedi
+    #      ama ikinci çağrı yapıldı, 27,9 sn + toplam 189 sn).
+    #   2. İkinci istem **kapalı**: birleşik bağlam bütçeyle sınırlanır (prefill şişmesin).
+    ek_arama, ek_arama_yeni, ek_arama_kabul = False, False, False
     if not (m.get("arac_sorgulari") or []) and _EKSIK_RE.search(yanit or ""):
-        # Ek arama YÖNLENDİRMESİZ ve daha geniş (topk 8): aksi hâlde aynı modül yönlendirmesi
-        # bağlamı yine aynı dossiye kilitler (ölçüldü: "FMS-202'de KPK-5" → doğru belge FMS205_DURUM'da).
         ek, ek_kaynak, _ = baglam_kur(db, q, topk=8, butce_kr=8000, dilim_kr=2000,
                                       dilim_sayisi=4, sec_max=5, yonlendirme=False)
-        if ek:
-            ek_arama = True                       # ek arama YAPILDI (yanıt değişmese de görünür olsun)
-            m2 = model_sor(q, baglam + "\n\nEK ARAMA SONUÇLARI:\n" + ek, model=model, ctx=ctx,
+        mevcut = {(k["doc"], k["page"]) for k in kaynaklar}
+        yeni = [k for k in ek_kaynak if (k["doc"], k["page"]) not in mevcut]
+        if ek and yeni:                           # yalnız GERÇEKTEN yeni belge varsa yeniden sor
+            ek_arama, ek_arama_yeni = True, True
+            birlesik = (baglam + "\n\nEK ARAMA SONUÇLARI:\n" + ek)
+            sinir = u["butce_kr"] * 2             # birleşik istem tavanı (prefill'i şişirmesin)
+            m2 = model_sor(q, birlesik[:sinir], model=model, ctx=ctx,
                            en_fazla=en_fazla, db=db, araclar=False)
             y2 = (m2 or {}).get("yanit") or ""
             if y2.strip() and not _EKSIK_RE.search(y2):
                 m, yanit, ek_arama_kabul = m2, y2, True
-                kaynaklar = kaynaklar + [k for k in ek_kaynak
-                                         if (k["doc"], k["page"]) not in {(x["doc"], x["page"]) for x in kaynaklar}]
+                kaynaklar = kaynaklar + yeni
+        elif ek:
+            ek_arama = True                       # arama yapıldı ama yeni belge yok → görünür olsun
+    eksik_beyan = bool(_EKSIK_RE.search(yanit or ""))     # yanıt hâlâ "bağlamda yok" diyor mu
     atiflar = _atif_esle(yanit, kaynaklar)
     atif_eklendi = False
     if not atiflar and kaynaklar:
@@ -791,7 +805,9 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
             "arac_sorgulari": m.get("arac_sorgulari") or [], "atif_eklendi": atif_eklendi,
             "think_yedek": bool(m.get("think_yedek")),          # düşünme bütçesi yetti → düşünmesiz soruldu
             "ek_arama": ek_arama,                               # model "eksik" dedi → koddan ek arama yapıldı
+            "ek_arama_yeni": ek_arama_yeni,                     # ek arama YENİ belge getirdi mi (ikinci çağrı koşulu)
             "ek_arama_kabul": ek_arama_kabul,                    # ek arama yanıtı değiştirdi mi
+            "eksik_beyan": eksik_beyan,                          # yanıt hâlâ "bağlamda yok" diyor (arayüz ipucu için)
             "atıfsız": not atiflar}
 
 
