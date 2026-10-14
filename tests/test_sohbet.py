@@ -252,6 +252,26 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
     assert sayac["n"] == 1 and m["arac_sorgulari"] == []
 
 
+def test_atifsiz_yanita_kaynak_kod_ekler(client, monkeypatch):
+    """Ölçüldü: içerik doğru ama atıf yok (Q6). Modelden istemek yerine kaynakları KOD ekler."""
+    monkeypatch.setattr(sh, "model_sor", lambda *a, **k: {
+        "yanit": "Rulman modülü manuelde s.92, s.94, s.96 sayfalarında anlatılıyor.",
+        "ham": "", "sure_s": 2.0, "tok": 20, "tok_s": 10.0, "model": "test-model", "url": "http://x",
+        "hata": None, "arac_sorgulari": []})
+    j = client.post("/api/ask", json={"q": "Rulman seçme-besleme modülü manuelde hangi sayfalarda?"}).json()
+    assert j["ok"] is True and j["atif_eklendi"] is True
+    assert j["atiflar"][0]["tanindi"] is True, "kod eklenen kaynak tanınmalı"
+    assert "Kaynaklar:" in j["yanit"] and j["atıfsız"] is False
+
+
+def test_atifli_yanitsa_dokunulmaz(client, monkeypatch):
+    monkeypatch.setattr(sh, "model_sor", lambda *a, **k: {
+        "yanit": "Cevap [FMS200_Z, sayfa 1].", "ham": "", "sure_s": 1.0, "tok": 5, "tok_s": 5.0,
+        "model": "test-model", "url": "http://x", "hata": None, "arac_sorgulari": []})
+    j = client.post("/api/ask", json={"q": "GRAFCET nedir?"}).json()
+    assert j["atif_eklendi"] is False and "Kaynaklar:" not in j["yanit"]
+
+
 def test_metin_bicimli_arac_cagrisi_da_yurutulur(client, monkeypatch):
     """ÖLÇÜLDÜ (nemotron-3-nano:4b): araç çağrısını `tool_calls` yerine METİN olarak yazıyor
     (`<tool_call><function=arastir_arsiv>{"sorgu": "..."}`). Bu biçim de yürütülmeli."""
@@ -274,6 +294,27 @@ def test_metin_bicimli_arac_cagrisi_da_yurutulur(client, monkeypatch):
     m = sh.model_sor("kaç kayıt?", "bağlam", db=appmod.DB, araclar=True)
     assert m["arac_sorgulari"] == ["GRAFCET"] and "6 kayıt" in m["yanit"]
     assert "<tool_call>" not in m["yanit"]
+
+
+def test_duz_bicimli_tool_call_da_calisir(client, monkeypatch):
+    """ÖLÇÜLDÜ (nemotron-3-nano:4b): çağrıyı düz biçimde döndürüyor
+    `{"index":0,"name":"arastir_arsiv","arguments":{"sorgu":"hidrolik pres"}}` — `function` sarmalayıcısı YOK."""
+    cagri = {"n": 0}
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+        cagri["n"] += 1
+        if cagri["n"] == 1:
+            return {"message": {"content": "", "tool_calls": [
+                {"index": 0, "name": "arastir_arsiv", "arguments": {"sorgu": "GRAFCET istasyon"}}]}}
+        assert any(m.get("role") == "tool" and "KAYNAK" in (m.get("content") or "")
+                   for m in mesajlar), "araç sonucu bağlam olarak eklenmeli"
+        return {"message": {"content": "6 kayıt var [FMS200_Z, sayfa 1]."},
+                "eval_count": 8, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("kaç kayıt?", "bağlam", db=appmod.DB, araclar=True)
+    assert m["arac_sorgulari"] == ["GRAFCET istasyon"], "düz biçimli çağrı yürütülmeli"
+    assert "6 kayıt" in m["yanit"]
 
 
 def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):

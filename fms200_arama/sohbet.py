@@ -588,11 +588,29 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
     if m.get("hata"):
         return {"ok": False, "sebep": f"sohbet modeli yok ({m['hata']}) — yalnız arama",
                 "yanit": "", "kaynaklar": kaynaklar, "atiflar": [], "baglam_kr": kr}
-    return {"ok": True, "yanit": m["yanit"], "atiflar": _atif_esle(m["yanit"], kaynaklar),
+    atiflar = _atif_esle(m["yanit"], kaynaklar)
+    yanit = m["yanit"]
+    atif_eklendi = False
+    if not atiflar and kaynaklar:
+        # Atıf disiplini: içerik doğru olabiliyor ama model zaman zaman atıf koymuyor
+        # (ölçüldü: Q6 "s.92/94/96" doğru yanıt, atıf yok → sıkı ölçütte ✗). Modelden İSTEMİYORUZ;
+        # kaynakları **kod** ekliyor → uydurma riski sıfır.
+        gorulen_doc, satirlar = set(), []
+        for k in kaynaklar:
+            if k["doc"] in gorulen_doc:
+                continue
+            gorulen_doc.add(k["doc"])
+            satirlar.append(f"[{k['doc']}{'' if k['page'] is None else ' · sayfa ' + str(k['page'])}]")
+            if len(satirlar) >= 3:
+                break
+        yanit = (yanit.rstrip() + "\n\nKaynaklar: " + " · ".join(satirlar)).strip()
+        atiflar = _atif_esle(yanit, kaynaklar)
+        atif_eklendi = True
+    return {"ok": True, "yanit": yanit, "atiflar": atiflar,
             "kaynaklar": kaynaklar, "baglam_kr": kr, "model": m.get("model"), "url": m.get("url"),
             "sure_s": m.get("sure_s"), "tok": m.get("tok"), "tok_s": m.get("tok_s"),
-            "arac_sorgulari": m.get("arac_sorgulari") or [],
-            "atıfsız": not atiflari_ayikla(m["yanit"])}
+            "arac_sorgulari": m.get("arac_sorgulari") or [], "atif_eklendi": atif_eklendi,
+            "atıfsız": not atiflar}
 
 
 def durum() -> dict:
