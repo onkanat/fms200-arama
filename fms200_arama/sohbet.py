@@ -340,7 +340,12 @@ def _arac_calistir(db: str | None, ad: str, args: dict) -> str:
 
 def _ollama_chat(mesajlar: list[dict], model: str, ctx: int, en_fazla: int,
                  timeout: float, url: str, araclar: bool = False) -> dict:
-    """Tek HTTP isteği; yanıt gövdesini döndürür. Hata durumunda {'_hata': ...}."""
+    """Tek HTTP isteği; yanıt gövdesini döndürür.
+
+    Hata: {'_hata': ...} · araç **desteklenmiyorsa**: {'_hata':..., '_destek_yok': True}
+    (ollama, araç desteklemeyen modelde HTTP 400 + \"does not support tools\" döndürüyor —
+    ölçüldü: gemma3:4b. Bu yüzden araç göndermek modeli TAMAMEN düşürebiliyor.)
+    """
     govde = {"model": model, "stream": False, "think": False, "messages": mesajlar,
              "options": {"num_ctx": ctx, "temperature": 0.2, "num_predict": en_fazla},
              "keep_alive": "5m"}
@@ -351,8 +356,23 @@ def _ollama_chat(mesajlar: list[dict], model: str, ctx: int, en_fazla: int,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            govde_hata = e.read().decode("utf-8", "replace")
+        except Exception:                                   # pragma: no cover
+            govde_hata = ""
+        destek_yok = e.code == 400 and "does not support tools" in govde_hata
+        return {"_hata": f"HTTP Error {e.code}: {govde_hata[:120]}", "_destek_yok": destek_yok}
     except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
         return {"_hata": f"{type(e).__name__}: {str(e)[:120]}"}
+
+
+_ARAC_DESTEK: dict[str, bool] = {}          # model → araç destekliyor mu (bir kez ölçülür)
+
+
+def arac_destegi(model: str) -> bool | None:
+    """Bilinen araç desteği: True/False/None(bilinmiyor)."""
+    return _ARAC_DESTEK.get(model)
 
 
 def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None = None,
@@ -379,11 +399,21 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     mesajlar.append({"role": "user", "content": kullanici})
     t0 = time.time()
     arac_sorgulari: list[str] = []
-    kullan_arac = bool(araclar and not gorev and db)
+    # Araç desteği bir kez ölçülür: bilinmiyorsa denenir; model reddederse (400) bir kez daha
+    # araçsız sorulur — böylece "araç var mı?" sorusu özelliği hiç düşürmez.
+    bilinen = _ARAC_DESTEK.get(model)
+    kullan_arac = bool(araclar and not gorev and db and bilinen is not False)
     d = {}
     for tur in range(max(1, arac_tur + 1)):
-        d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url,
-                         araclar=kullan_arac and tur < arac_tur)
+        araclari_gonder = kullan_arac and tur < arac_tur
+        d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclari_gonder)
+        if d.get("_destek_yok"):
+            _ARAC_DESTEK[model] = False                     # modele not düş, tekrar denemeyelim
+            kullan_arac = False
+            araclari_gonder = False
+            d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False)
+        elif araclari_gonder:
+            _ARAC_DESTEK.setdefault(model, True)            # araç kabul edildi
         if d.get("_hata"):
             SON_HATA = d["_hata"]
             return {"yanit": "", "ham": "", "sure_s": round(time.time() - t0, 1), "hata": SON_HATA,
@@ -526,7 +556,8 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
 
 
 def durum() -> dict:
-    """Arayüz/durum ucu için: yapılandırma + son hata (ağ çağrısı YAPMAZ)."""
+    """Arayüz/durum ucu için: yapılandırma + son hata + araç desteği (ağ çağrısı YAPMAZ)."""
     url, model, ctx, mx, _ = cfg()
     return {"url": url, "model": model, "ctx": ctx, "en_fazla": mx,
-            "son_hata": SON_HATA, "hazir": SON_HATA is None}
+            "son_hata": SON_HATA, "hazir": SON_HATA is None,
+            "arac_destek": arac_destegi(model)}          # None = henüz denenmedi

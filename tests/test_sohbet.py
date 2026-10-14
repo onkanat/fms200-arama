@@ -250,3 +250,29 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
     monkeypatch.setattr(sh, "_ollama_chat", taklit)
     m = sh.model_sor("soru", "bağlam", db=appmod.DB, araclar=False)
     assert sayac["n"] == 1 and m["arac_sorgulari"] == []
+
+
+def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):
+    """ÖLÇÜLEN ARIZA: gemma3:4b araç desteklemiyor → ollama 400 döndürüyor ve sohbet tamamen
+    düşüyordu. Artık bir kez denenir, destek yoksa araçsız sorulur ve özellik çalışır."""
+    sh._ARAC_DESTEK.clear()
+    cagri = {"n": 0, "aracli": []}
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+        cagri["n"] += 1
+        cagri["aracli"].append(araclar)
+        if araclar:
+            return {"_hata": 'HTTP Error 400: {"error":"… does not support tools"}', "_destek_yok": True}
+        return {"message": {"content": "araçsız yanıt [FMS200_Z, sayfa 1]"}, "eval_count": 5,
+                "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("soru", "bağlam", model="arac-desteklemeyen:1b", db=appmod.DB, araclar=True)
+    assert m["hata"] is None and "araçsız yanıt" in m["yanit"]
+    assert cagri["aracli"] == [True, False], "önce araçlı denendi, sonra araçsız tekrar"
+    assert sh.arac_destegi("arac-desteklemeyen:1b") is False, "destek yok diye not edilmeli"
+    # ikinci soru artık doğrudan araçsız gider (tekrar 400 yemez)
+    cagri["n"] = 0
+    cagri["aracli"].clear()
+    sh.model_sor("soru2", "bağlam", model="arac-desteklemeyen:1b", db=appmod.DB, araclar=True)
+    assert cagri["aracli"] == [False]
