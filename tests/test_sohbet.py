@@ -196,3 +196,57 @@ def test_kaynak_bulunamayinca_yol_gosterir(client, monkeypatch):
     assert j["ok"] is True and j["bos"] is True
     assert "arşivde bulamadım" in j["yanit"].lower()
     assert "daralt" in j["yanit"].lower()
+
+
+# ------------------------------------------------------------------ çok dillilik + araştırma aracı
+def test_dil_varyantlari_tr_soruyu_en_ve_es_acar():
+    v = sh.dil_varyantlari("hidrolik pres arızası nasıl bulunur?")
+    assert len(v) == 2, "EN ve ES varyantı üretilmeli"
+    assert "hydraulic press" in v[0] and "symptom" in v[0]
+    assert "prensa hidráulica" in v[1] and "avería" in v[1]
+    assert sh.dil_varyantlari("GRAFCET nedir") == [], "sözlükte olmayan terim varyant üretmez"
+
+
+def test_kaynak_yoksa_arac_da_yol_gosterir(tmp_path):
+    root = os.path.join(str(tmp_path), "bos")
+    os.makedirs(os.path.join(root, "dokuman", "BOS", "metin"), exist_ok=True)
+    db = os.path.join(str(tmp_path), "b.db")
+    bi.build(root=root, db=db, verbose=False)
+    assert "bulunamadı" in sh._arac_calistir(db, "arastir_arsiv", {"sorgu": "olmayan terim"})
+    assert "bilinmeyen araç" in sh._arac_calistir(db, "yok_arac", {})
+
+
+def test_model_arac_cagrisini_yurutur(client, monkeypatch):
+    """Araç destekli model `arastir_arsiv` çağırırsa: araç çalışır, ikinci turda yanıt gelir."""
+    cagrilar = []
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False):
+        cagrilar.append(mesajlar)
+        if len(cagrilar) == 1:
+            assert araclar is True, "ilk turda araç tanımı gönderilmeli"
+            return {"message": {"content": "", "tool_calls": [{"function": {
+                "name": "arastir_arsiv", "arguments": {"sorgu": "GRAFCET istasyon", "k": 2}}}]}}
+        return {"message": {"content": "Dizi şeması GRAFCET'tir [FMS200_Z, sayfa 1]."},
+                "eval_count": 10, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("GRAFCET nedir?", "--- KAYNAK: FMS200_Z (belge) ---\nmetin", db=appmod.DB, araclar=True)
+    assert m["hata"] is None
+    assert m["arac_sorgulari"] == ["GRAFCET istasyon"], "araç sorgusu kaydedilmeli"
+    assert "GRAFCET" in m["yanit"]
+    assert len(cagrilar) == 2
+    rol = [x["role"] for x in cagrilar[1]]                 # 2. turda sistem+hatırlatma+araç sonucu
+    assert rol[0] == "system" and rol[1] == "system" and "tool" in rol
+    assert any("Hatırlatma" in x["content"] for x in cagrilar[1] if x["role"] == "system")
+
+
+def test_arac_kapaliysa_tek_istek(client, monkeypatch):
+    sayac = {"n": 0}
+
+    def taklit(*a, **k):
+        sayac["n"] += 1
+        return {"message": {"content": "yanıt"}, "eval_count": 5, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("soru", "bağlam", db=appmod.DB, araclar=False)
+    assert sayac["n"] == 1 and m["arac_sorgulari"] == []

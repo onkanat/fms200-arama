@@ -254,6 +254,7 @@ def api_ask(payload: dict):
     model = (payload.get("model") or "").strip() or None      # istek başına model seçimi (ölçüm/deneme)
     ctx = payload.get("ctx")
     en_fazla = payload.get("en_fazla")
+    araclar = payload.get("araclar")                          # None → varsayılan (açık)
     if not q:
         raise HTTPException(400, "q gerekli")
     try:
@@ -262,7 +263,8 @@ def api_ask(payload: dict):
     except (TypeError, ValueError):
         ctx = en_fazla = None
     sonuc = _sh.sor(DB, q, doc=doc, topk=max(1, min(k, 10)), mode=mode,
-                    model=model, ctx=ctx, en_fazla=en_fazla)
+                    model=model, ctx=ctx, en_fazla=en_fazla,
+                    araclar=None if araclar is None else bool(araclar))
     return sonuc
 
 

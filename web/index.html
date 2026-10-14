@@ -337,8 +337,11 @@ async function sor(){
       <div class="yanit">${esc(r.taslak||"")}</div></div>`;
     $("#taslakac").onclick = () => editorAc(r.taslak_doc, r.taslak||"");
   } else {
+    const arastirma = (r.arac_sorgulari && r.arac_sorgulari.length)
+      ? `<div class="hata" style="color:#8a93a6">🔎 model arşivde araştırdı: ${r.arac_sorgulari.map(x=>esc(x)).join(" · ")}</div>` : "";
     $("#view").innerHTML = `<div class="ask">
       <div class="sor">💬 ${esc(q)} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${r.kaynaklar.length} kaynak (${r.baglam_kr} kr) · ${ms} ms</div>
+      ${arastirma}
       <div class="yanit">${esc(r.yanit||"(boş yanıt)")}</div>
       ${r["atıfsız"]?'<div class="hata">⚠ yanıt atıf içermiyor — kaynak sayfasını kendin doğrula</div>':""}
       <div style="margin-top:8px">${atlar}</div>

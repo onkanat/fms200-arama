@@ -30,13 +30,59 @@ from . import search as se
 _KAPALI = "<" + "/think" + ">"          # literal yazılmaz (araç/şablon katmanı yiyebiliyor)
 
 SISTEM = (
-    "Sen SMC FMS-200 eğitim seti doküman arşivinin asistanısın. Yalnızca sana verilen KAYNAK "
-    "dilimlerini kullan; dış bilgi katma. Yanıtı TÜRKÇE yaz.\n"
-    "KURAL: Önce 2-4 cümlelik yanıtı yaz, sonra kullandığın her bilgi için atıf ver.\n"
-    "ATIF BIÇİMİ (birebir): [belge, sayfa <numara>]   — örnek: [FMS203_DURUM, sayfa 3]\n"
-    "Kaynakta yanıt yoksa yalnızca \"arşivde bulamadım\" yaz. Soru belirsizse (hangi devre, hangi "
-    "modül?) önce hangi belge/şema olduğunu sor."
+    "FMS-200 arşiv asistanı. Görev: soruyu YALNIZ verilen KAYNAK'lardan yanıtlamak.\n"
+    "· Dil: arşiv TR/EN/ES üç dilli; yanıtı **sorunun dilinde** ver, terimleri üç dilde de ara "
+    "(hidrolik pres = hydraulic press = prensa hidráulica).\n"
+    "· Atıf: her bilgiden sonra [belge, sayfa N] — örnek [FMS203_DURUM, sayfa 3].\n"
+    "· Kaynakta yoksa yalnız \"arşivde bulamadım\" yaz; soru belirsizse (hangi modül/devre?) sor.\n"
+    "· Gerekirse `arastir_arsiv` aracıyla ek arama yap (TR/EN/ES sorgu serbest)."
 )
+
+# Küçük hatırlatıcı (ikinci system mesajı): yük bindirmez, işi aklında tutar.
+HATIRLATMA = "Hatırlatma: yalnız KAYNAKLAR'dan yanıtla, uydurma; atıfları [belge, sayfa N] yaz."
+
+# Modelin kullanabileceği TEK araç: arşivde ek arama (tek adımlık ajan davranışı).
+ARACLAR = [{
+    "type": "function",
+    "function": {
+        "name": "arastir_arsiv",
+        "description": ("FMS-200 doküman arşivinde arama yapar ve bulunan sayfaların metnini döndürür. "
+                        "İlk bağlam yetmezse kullan; sorguyu TR/EN/ES yazabilirsin."),
+        "parameters": {"type": "object",
+                       "properties": {"sorgu": {"type": "string", "description": "arama sorgusu (TR/EN/ES)"},
+                                      "k": {"type": "integer", "description": "kaç sayfa (varsayılan 4)"}},
+                       "required": ["sorgu"]},
+    },
+}]
+
+# Sorgu açılımı: arşivin çoğu İngilizce/İspanyolca; tek dile sıkışmayalım (ölçüm gerekçesi:
+# yalnız TR terimle ararken EN/ES sayfalar bağlama girmiyordu).
+_CEVIRI = (
+    (r"hidrolik|\bpres\b", "hydraulic press", "prensa hidráulica"),
+    (r"rulman", "bearing", "rodamiento"),
+    (r"\bmil\b", "shaft", "eje"),
+    (r"kapak", "cover", "tapa"),
+    (r"vida", "screw", "tornillo"),
+    (r"g[öo]vde", "body supply", "base"),
+    (r"robot|vidalama", "robot screwing", "atornillado robot"),
+    (r"depo", "warehouse", "almacén"),
+    (r"piston|silindir", "cylinder piston", "cilindro pistón"),
+    (r"arıza|semptom", "fault symptom", "avería síntoma"),
+    (r"\bplc\b|program", "PLC program", "programa PLC"),
+    (r"transfer", "linear transfer", "transferencia lineal"),
+    (r"man[üu]el", "manual", "manual"),
+    (r"şema|çizim|resim", "drawing diagram", "esquema plano"),
+)
+
+
+def dil_varyantlari(q: str) -> list[str]:
+    """Soruyu EN + ES arama varyantlarına açar (bulunan terimlerden yeni sorgular üretir)."""
+    ing, isp = [], []
+    for kalip, en, es in _CEVIRI:
+        if re.search(kalip, q or "", re.I):
+            ing.append(en)
+            isp.append(es)
+    return [v for v in (" ".join(ing), " ".join(isp)) if v.strip()]
 
 SISTEM_GOREV = (
     "Sen SMC FMS-200 arşivinin teknik yazıcısısın. Sana bir dökümanın MEVCUT içeriği verilecek.\n"
@@ -163,6 +209,14 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
     terimler = [t for t in re.split(r"\W+", (q or "").lower()) if len(t) > 3]
     yon = rota(q)
     isabetler = se.search(q, db=db, limit=max(1, topk), doc=doc, mode=mode)
+    # Çok dilli arama: arşivin çoğu EN/ES; TR sorgu tek başına o sayfaları getirmiyor.
+    if not doc:
+        gorulen = {(r["doc"], r["page"]) for r in isabetler}
+        for varyant in dil_varyantlari(q):
+            for r in se.search(varyant, db=db, limit=max(1, topk), mode=mode):
+                if (r["doc"], r["page"]) not in gorulen:
+                    gorulen.add((r["doc"], r["page"]))
+                    isabetler.append(r)
     con = sqlite3.connect(db)
     try:
         # (1) Modül kodu yönlendirmesi: soruda FMS-20x/EST.n varsa o dossiye **doğrudan** alınır.
@@ -267,10 +321,49 @@ def atiflari_ayikla(yanit: str) -> list[tuple[str, int | None]]:
     return out
 
 
+def _arac_calistir(db: str | None, ad: str, args: dict) -> str:
+    """Modelin çağırdığı aracı yürütür. Tek araç: `arastir_arsiv`."""
+    if ad != "arastir_arsiv" or not db:
+        return f"(bilinmeyen araç: {ad})"
+    sorgu = (args.get("sorgu") or "").strip()
+    try:
+        k = int(args.get("k") or 4)
+    except (TypeError, ValueError):
+        k = 4
+    if not sorgu:
+        return "(sorgu boş)"
+    baglam, kaynaklar, kr = baglam_kur(db, sorgu, topk=max(1, min(k, 6)))
+    if not baglam:
+        return f"'{sorgu}' için arşivde kaynak bulunamadı."
+    return baglam
+
+
+def _ollama_chat(mesajlar: list[dict], model: str, ctx: int, en_fazla: int,
+                 timeout: float, url: str, araclar: bool = False) -> dict:
+    """Tek HTTP isteği; yanıt gövdesini döndürür. Hata durumunda {'_hata': ...}."""
+    govde = {"model": model, "stream": False, "think": False, "messages": mesajlar,
+             "options": {"num_ctx": ctx, "temperature": 0.2, "num_predict": en_fazla},
+             "keep_alive": "5m"}
+    if araclar:
+        govde["tools"] = ARACLAR
+    req = urllib.request.Request(f"{url}/api/chat", data=json.dumps(govde).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+        return {"_hata": f"{type(e).__name__}: {str(e)[:120]}"}
+
+
 def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None = None,
               ctx: int | None = None, en_fazla: int | None = None,
-              timeout: float | None = None, gorev: bool = False) -> dict:
-    """Yerel sohbet ucuna tek istek. Döner: {yanit, ham, sure_s, tok, tok_s, hata}."""
+              timeout: float | None = None, gorev: bool = False,
+              db: str | None = None, araclar: bool = False, arac_tur: int = 2) -> dict:
+    """Yerel sohbet ucuna istek(ler). Model araç destekliyorsa `arastir_arsiv` ile
+    **tek adımlık araştırma** yapabilir (en çok `arac_tur` tur).
+
+    Döner: {yanit, ham, sure_s, tok, tok_s, hata, arac_sorgulari}
+    """
     global SON_HATA
     url0, model0, ctx0, mx0, to0 = cfg()
     url = (url or url0).rstrip("/")
@@ -280,28 +373,49 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     timeout = timeout or to0
     kullanici = (f"GÖREV: {soru}\n\nMEVCUT İÇERİK:\n{baglam}" if gorev
                  else f"SORU: {soru}\n\nKAYNAKLAR:\n{baglam}")
-    govde = {"model": model, "stream": False, "think": False,
-             "messages": [{"role": "system", "content": SISTEM_GOREV if gorev else SISTEM},
-                          {"role": "user", "content": kullanici}],
-             "options": {"num_ctx": ctx, "temperature": 0.2, "num_predict": en_fazla},
-             "keep_alive": "5m"}
-    req = urllib.request.Request(f"{url}/api/chat", data=json.dumps(govde).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"})
+    mesajlar: list[dict] = [{"role": "system", "content": SISTEM_GOREV if gorev else SISTEM}]
+    if not gorev:
+        mesajlar.append({"role": "system", "content": HATIRLATMA})   # küçük hatırlatıcı
+    mesajlar.append({"role": "user", "content": kullanici})
     t0 = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = json.loads(r.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
-        SON_HATA = f"{type(e).__name__}: {str(e)[:120]}"
-        return {"yanit": "", "ham": "", "sure_s": round(time.time() - t0, 1), "hata": SON_HATA}
+    arac_sorgulari: list[str] = []
+    kullan_arac = bool(araclar and not gorev and db)
+    d = {}
+    for tur in range(max(1, arac_tur + 1)):
+        d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url,
+                         araclar=kullan_arac and tur < arac_tur)
+        if d.get("_hata"):
+            SON_HATA = d["_hata"]
+            return {"yanit": "", "ham": "", "sure_s": round(time.time() - t0, 1), "hata": SON_HATA,
+                    "arac_sorgulari": arac_sorgulari}
+        msg = d.get("message") or {}
+        cagrilar = msg.get("tool_calls") or []
+        if not cagrilar:
+            break
+        mesajlar.append({"role": "assistant", "content": msg.get("content") or "",
+                         "tool_calls": cagrilar})
+        for c in cagrilar:                                  # araç çağrılarını yürüt
+            fonk = (c.get("function") or {})
+            ad, args = fonk.get("name") or "", fonk.get("arguments") or {}
+            if isinstance(args, str):                        # bazı modeller JSON'u metin döndürür
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {"sorgu": args}
+            if ad == "arastir_arsiv":
+                arac_sorgulari.append(str(args.get("sorgu") or "")[:80])
+            mesajlar.append({"role": "tool", "content": _arac_calistir(db, ad, args),
+                             "tool_name": ad})
     SON_HATA = None
-    ham = (d.get("message") or {}).get("content") or ""
-    if not ham and (d.get("message") or {}).get("thinking"):        # bazı modeller düşünmeyi ayrı verir
-        ham = d["message"]["thinking"]
+    msg = d.get("message") or {}
+    ham = msg.get("content") or ""
+    if not ham and msg.get("thinking"):                     # bazı modeller düşünmeyi ayrı verir
+        ham = msg["thinking"]
     n = d.get("eval_count") or 0
     sure = (d.get("total_duration") or 0) / 1e9 or (time.time() - t0)
     return {"yanit": temizle(ham), "ham": ham, "sure_s": round(time.time() - t0, 1),
-            "tok": n, "tok_s": round(n / sure, 1) if sure else None, "model": model, "url": url}
+            "tok": n, "tok_s": round(n / sure, 1) if sure else None, "model": model, "url": url,
+            "hata": None, "arac_sorgulari": arac_sorgulari}
 
 
 def _atif_esle(yanit: str, kaynaklar: list[dict]) -> list[dict]:
@@ -364,7 +478,8 @@ def _bos_yanit(db: str, q: str) -> dict:
 
 
 def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hybrid",
-        model: str | None = None, ctx: int | None = None, en_fazla: int | None = None) -> dict:
+        model: str | None = None, ctx: int | None = None, en_fazla: int | None = None,
+        araclar: bool | None = None) -> dict:
     """Tam akış. Model yoksa bile **kaynaklar** döner (`ok: False` + `sebep`).
 
     Görev cümlesi ("... yeniden yaz") + hedef döküman varsa **taslak** üretir (`taslak`,`taslak_doc`);
@@ -398,13 +513,15 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
     baglam, kaynaklar, kr = baglam_kur(db, q, doc=doc, topk=topk, mode=mode)
     if not baglam:
         return _bos_yanit(db, q)
-    m = model_sor(q, baglam, model=model, ctx=ctx, en_fazla=en_fazla)
+    m = model_sor(q, baglam, model=model, ctx=ctx, en_fazla=en_fazla, db=db,
+                  araclar=araclar if araclar is not None else (os.environ.get("FMS200_CHAT_TOOLS", "1") != "0"))
     if m.get("hata"):
         return {"ok": False, "sebep": f"sohbet modeli yok ({m['hata']}) — yalnız arama",
                 "yanit": "", "kaynaklar": kaynaklar, "atiflar": [], "baglam_kr": kr}
     return {"ok": True, "yanit": m["yanit"], "atiflar": _atif_esle(m["yanit"], kaynaklar),
             "kaynaklar": kaynaklar, "baglam_kr": kr, "model": m.get("model"), "url": m.get("url"),
             "sure_s": m.get("sure_s"), "tok": m.get("tok"), "tok_s": m.get("tok_s"),
+            "arac_sorgulari": m.get("arac_sorgulari") or [],
             "atıfsız": not atiflari_ayikla(m["yanit"])}
 
 
