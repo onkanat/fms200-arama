@@ -304,13 +304,21 @@ async function sor(){
   const q = ($("#q").value.trim() || prompt("Arşive sorulacak soru:") || "").trim();
   if(!q) return;
   const doc = (seciliDoc && $("#askyalniz") && $("#askyalniz").checked) ? seciliDoc : "";
-  $("#view").innerHTML = '<div class="ask"><div class="sor">💬 düşünülüyor… (yerel model; 8 GB makinede 10-30 sn sürebilir)</div></div>';
+  $("#view").innerHTML = '<div class="ask"><div class="sor" id="bekle">💬 düşünülüyor… 0 sn</div></div>';
+  // Süre sayacı: yanıt gecikince panel "donmuş" görünmesin (ölçüldü: ev modunda 30-90 sn olabiliyor).
+  let _sn = 0;
+  const _sayac = setInterval(()=>{
+    _sn++; const el = $("#bekle");
+    if(!el){ clearInterval(_sayac); return; }
+    el.textContent = `💬 düşünülüyor… ${_sn} sn · ev modunda 30–90 sn (düşünen model), okulda 20–60 sn`;
+  }, 1000);
   const t0 = performance.now();
   let r;
   try{
     r = await fetch("/api/ask", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({q, doc, k:5})}).then(x=>x.json());
-  }catch(e){ $("#view").innerHTML = `<div class="ask"><div class="hata">istek hatası: ${esc(String(e))}</div></div>`; return; }
+  }catch(e){ clearInterval(_sayac); $("#view").innerHTML = `<div class="ask"><div class="hata">istek hatası: ${esc(String(e))}</div></div>`; return; }
+  clearInterval(_sayac);
   const ms = Math.round(performance.now()-t0);
   const atlar = (r.atiflar||[]).map(a=>{
     const et = a.page!=null ? `s.${a.page}` : "belge";
@@ -342,6 +350,7 @@ async function sor(){
     $("#view").innerHTML = `<div class="ask">
       <div class="sor">💬 ${esc(q)} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${r.kaynaklar.length} kaynak (${r.baglam_kr} kr) · ${ms} ms</div>
       ${arastirma}
+      ${r.think_yedek?'<div class="hata" style="color:#8a93a6">ℹ️ düşünme bütçesi yetmedi → yanıt <b>düşünmesiz</b> yeniden sorularak alındı</div>':""}
       <div class="yanit">${esc(r.yanit||"(boş yanıt)")}</div>
       ${r["atıfsız"]?'<div class="hata">⚠ yanıt atıf içermiyor — kaynak sayfasını kendin doğrula</div>':""}
       <div style="margin-top:8px">${atlar}</div>

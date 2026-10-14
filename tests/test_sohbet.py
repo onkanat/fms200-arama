@@ -267,11 +267,20 @@ def test_arac_kapaliysa_tek_istek(client, monkeypatch):
 
 
 def test_uc_ev_modu(monkeypatch):
-    """Kullanıcı kararı 14 Eki: EV AĞINDA → ECE_PC 35B · think AÇIK · bağlam sınırı YOK."""
+    """EV AĞINDA → ECE_PC 35B · bağlam sınırı YOK · **think varsayılan KAPALI**.
+    Ölçüm (14 Eki): think=true 81–240 sn ve boş/kesik yanıt; think=false 0,2–15,7 sn ve 15/15."""
     monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
     u = sh.uc()
     assert u["mod"] == "ev" and u["url"] == sh.EV_URL and u["model"] == sh.EV_MODEL
-    assert u["think"] is True and u["ctx"] is None and u["en_fazla"] == 3000
+    assert u["think"] is False and u["ctx"] is None and u["en_fazla"] == 3000
+
+
+def test_ev_modu_think_acilirsa_butce_de_yukselir(monkeypatch):
+    """`FMS200_CHAT_THINK=1`: think açılır **ve** bütçe 8000'e çıkar (yoksa muhakeme yanıtı kesiyor)."""
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    monkeypatch.setenv("FMS200_CHAT_THINK", "1")
+    u = sh.uc()
+    assert u["think"] is True and u["en_fazla"] == 8000
 
 
 def test_uc_yerel_modu(monkeypatch):
@@ -343,6 +352,46 @@ def test_dusunme_metni_yanit_yerine_konmaz(monkeypatch):
     assert "MUHAKEME" not in m["yanit"], "düşünme metni yanıt olarak dönmemeli"
     assert m["bos"] is True and m["dusunme_kr"] > 0
     assert "düşünme bütçesini tüketti" in m["yanit"]
+
+
+def test_dusunme_butcesi_yetmezse_dusunmesiz_tekrar_sorulur(monkeypatch):
+    """ÖLÇÜLDÜ (14 Eki, 35B + think=true + 3000 token): üretimin tamamı muhakemeye gitti →
+    aynı soruda 81 sn boş, 98 sn 31 karakter ('Verilen kaynaklara göre FMS-2'), 240 sn dolgun.
+    Kullanıcı bunu 'dondu' görüyor. Çare: kısa/boş yanıtta **bir kez** düşünmesiz sor."""
+    monkeypatch.setattr(sh, "uc", lambda: {"url": "http://x", "model": "m", "think": True,
+                                            "ctx": None, "en_fazla": 3000, "timeout": 60,
+                                            "mod": "ev"})
+    cagrilar: list[bool] = []
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+        cagrilar.append(think)
+        if think:                                                      # düşünen tur: kesik yanıt
+            return {"message": {"content": "Verilen kaynaklara göre FMS-2",
+                                "thinking": "uzun muhakeme " * 200},
+                    "eval_count": 3000, "total_duration": 2_000_000_000}
+        return {"message": {"content": "FMS-203 hidrolik pres 3. istasyondadır [FMS203_DURUM, sayfa 1]."},
+                "eval_count": 40, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("FMS-203 nedir?", "bağlam")
+    assert cagrilar == [True, False], "önce düşünen, sonra düşünmesiz sorulmalı"
+    assert m["think_yedek"] is True
+    assert "3. istasyondadır" in m["yanit"] and "FMS-2  " not in m["yanit"]
+
+
+def test_yeterli_yanitta_tekrar_sorulmaz(monkeypatch):
+    monkeypatch.setattr(sh, "uc", lambda: {"url": "http://x", "model": "m", "think": True,
+                                           "ctx": None, "en_fazla": 3000, "timeout": 60, "mod": "ev"})
+    cagrilar: list[bool] = []
+
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+        cagrilar.append(think)
+        return {"message": {"content": "FMS-203 hidrolik pres 3. istasyondadır. " * 4},
+                "eval_count": 60, "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_ollama_chat", taklit)
+    m = sh.model_sor("FMS-203 nedir?", "bağlam")
+    assert cagrilar == [True] and m["think_yedek"] is False, "yeterli yanıtta ikinci istek olmamalı"
 
 
 def test_durum_uc_bilgisi_verir(client):

@@ -117,7 +117,7 @@ Model yoksa **arama bozulmaz** — `/api/ask` `ok:false` + kaynak listesi döner
 | `FMS200_CHAT_URL` / `FMS200_CHAT_MODEL` | *(ağ ölçümü)* / `gemma3:4b` | açıkça verilirse "elle" modu |
 | `FMS200_EV_URL` / `FMS200_EV_MODEL` | `http://192.168.1.26:11435` / 35B coding | **ev ağında** kullanılır |
 | `FMS200_YEREL_URL` / `FMS200_YEREL_MODEL` | `http://127.0.0.1:11434` / `gemma3:4b` | **ev ağı yoksa** |
-| `FMS200_CHAT_THINK` | ev: `1` · yerel: `0` | düşünme; açıkken bütçe 3000 |
+| `FMS200_CHAT_THINK` | `0` (kapalı) | **Ölçüldü:** açıkken aynı soru 81–240 sn ve boş/kesik yanıt; kapalıyken 0,2–15,7 sn ve 15/15. Açılırsa bütçe otomatik 8000 |
 | `FMS200_CHAT_CTX` | `4096` (`0` = sınır yok) | ev modunda **gönderilmez** (sunucu ayarı) |
 | `FMS200_CHAT_MAX` | ev: `3000` · yerel: `600` | en fazla üretilecek token |
 | `FMS200_CHAT_TIMEOUT` / `FMS200_CHAT_TIMEOUT_GOREV` | 120/600 · 300 | saniye |

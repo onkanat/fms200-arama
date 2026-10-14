@@ -7,8 +7,9 @@ yanıt + `[belge, sayfa N]` atıfları. Görev cümlelerinde ("... dosyasını y
 
 Ortam değişkenleri (uç seçimi — kullanıcı kararı 14 Eki 2026):
   **EV AĞINDA**  → ECE_PC `192.168.1.26:11435` (2×RTX 4060 Ti **16 GB = 32 GB VRAM**) ·
-                 `qwen3.6:35b-a3b-coding-mtp-q4_K_M` · **think AÇIK** · **bağlam sınırı yok**
-                 (modelin sunucudaki ayarı geçerli).
+                 `qwen3.6:35b-a3b-coding-mtp-q4_K_M` · bağlam sınırı yok · **`think` varsayılan KAPALI**
+                 (ölçüm: `think=true` 81–240 sn ve kesik/boş yanıt; `think=false` 0,2–15,7 sn ve 15/15).
+                 `FMS200_CHAT_THINK=1` ile açılır — o zaman bütçe otomatik 8000'e çıkar.
   **EV AĞI YOK** → yerel küçük model (`gemma3:4b`) · think kapalı · 4096 bağlam (8 GB makine şartı).
   FMS200_CHAT_URL açıkça verilirse o kullanılır (ölçüm/deneme) — "elle" modu.
   FMS200_EV_URL / FMS200_EV_MODEL / FMS200_YEREL_URL / FMS200_YEREL_MODEL ile değiştirilebilir;
@@ -129,6 +130,7 @@ YEREL_MODEL = os.environ.get("FMS200_YEREL_MODEL", "gemma3:4b")
 _EV_ONBELLEK: dict = {"zaman": 0.0, "var": False}
 _BOS_UYARI = ("(Model bu turda yanıt üretmedi — düşünme bütçesini tüketti. Soruyu kısaltıp "
               "tekrar deneyin.)")
+_KISA_YANIT = 100          # bundan kısa yanıt "kesik" sayılır → düşünmesiz yeniden sorulur (ölçüm: §) 
 
 
 def _sayi(ad: str, varsayilan: int) -> int:
@@ -175,11 +177,15 @@ def uc() -> dict:
                 "ctx": (ctx if ctx > 0 else None),
                 "en_fazla": _sayi("FMS200_CHAT_MAX", 600),
                 "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "elle"}
-    if ev_agi_var():                                             # EV: büyük model, think açık, sınırsız bağlam
+    if ev_agi_var():                                             # EV: büyük model, bağlam sınırı yok
+        # ÖLÇÜM (14 Eki, 35B, aynı soru): `think=true` + 3000 token → 81 sn BOŞ, 98 sn 31 kr KESİK,
+        # 240 sn dolgun; `think=true` + 8000 token → 116,6 sn (2 dk) ve muhakeme 5904 kr.
+        # `think=false` → 0,2–15,7 sn, 15/15. Bu yüzden ev modunda varsayılan **kapalı**; açmak
+        # isteyen `FMS200_CHAT_THINK=1` verir (o zaman bütçe otomatik 8000'e çıkar ki muhakeme bitsin).
+        think = os.environ.get("FMS200_CHAT_THINK", "0") == "1"
         return {"url": EV_URL, "model": os.environ.get("FMS200_EV_MODEL", EV_MODEL),
-                "think": os.environ.get("FMS200_CHAT_THINK", "1") == "1",
-                "ctx": None,
-                "en_fazla": _sayi("FMS200_CHAT_MAX", 3000),
+                "think": think, "ctx": None,
+                "en_fazla": _sayi("FMS200_CHAT_MAX", 8000 if think else 3000),
                 "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 600)), "mod": "ev"}
     return {"url": YEREL_URL,
             "model": (os.environ.get("FMS200_CHAT_MODEL")            # ölçüm/test yolu: tek model adı yeter
@@ -498,6 +504,7 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     if not gorev:
         mesajlar.append({"role": "system", "content": HATIRLATMA})   # küçük hatırlatıcı
     mesajlar.append({"role": "user", "content": kullanici})
+    bas_mesajlar = list(mesajlar)          # düşünme-bütçesi yedeği için TEMİZ kopya (araç turları bulaşmasın)
     t0 = time.time()
     arac_sorgulari: list[str] = []
     # Araç desteği bir kez ölçülür: bilinmiyorsa denenir; model reddederse (400) bir kez daha
@@ -548,17 +555,28 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     msg = d.get("message") or {}
     ham = msg.get("content") or ""
     dusunme_kr = len(msg.get("thinking") or "")
-    if not ham and think:
+    # --- Düşünme bütçesi yedeği (ÖLÇÜLDÜ 14 Eki, 35B + `think=true` + 3000 token) ---
+    # Model muhakemeye bütün bütçeyi harcayıp yanıtı BOŞ/KESİK bırakıyor: aynı soruda 81 sn → boş,
+    # 98 sn → 31 karakter ("Verilen kaynaklara göre FMS-2"), 240 sn → dolgun. Kullanıcı bunu
+    # "dondu" olarak görüyor. Çare: yanıt kısa/boşsa **bir kez** düşünmesiz sor — ölçüldü,
+    # `think=false` ile aynı soru 0,2–15,7 sn ve 15/15. (Araç-400 yedeğiyle aynı desen.)
+    think_yedek = False
+    if think and len(ham.strip()) < _KISA_YANIT:
+        d2 = _ollama_chat(bas_mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False)
+        ham2 = (d2.get("message") or {}).get("content") or ""
+        if not d2.get("_hata") and len(ham2.strip()) > len(ham.strip()):
+            d, ham, think_yedek = d2, ham2, True
+            dusunme_kr = len((d2.get("message") or {}).get("thinking") or "")
+    if not ham:
         # Düşünme metni YANIT YERİNE KONMAZ (kullanıcı kararı 14 Eki): ham muhakeme gösterilmez.
         ham = _BOS_UYARI
-    elif not ham and dusunme_kr:
-        ham = _BOS_UYARI                                   # think kapalıyken de muhakeme gösterilmez
     n = d.get("eval_count") or 0
     sure = (d.get("total_duration") or 0) / 1e9 or (time.time() - t0)
     return {"yanit": temizle(_arac_bloklarini_temizle(ham) or temizle(ham)), "ham": ham,
             "sure_s": round(time.time() - t0, 1),
             "tok": n, "tok_s": round(n / sure, 1) if sure else None, "model": model, "url": url,
-            "dusunme_kr": dusunme_kr, "bos": not (d.get("message") or {}).get("content"),
+            "dusunme_kr": dusunme_kr, "think_yedek": think_yedek,
+            "bos": not (d.get("message") or {}).get("content"),
             "hata": None, "arac_sorgulari": arac_sorgulari}
 
 
@@ -686,6 +704,7 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
             "kaynaklar": kaynaklar, "baglam_kr": kr, "model": m.get("model"), "url": m.get("url"),
             "sure_s": m.get("sure_s"), "tok": m.get("tok"), "tok_s": m.get("tok_s"),
             "arac_sorgulari": m.get("arac_sorgulari") or [], "atif_eklendi": atif_eklendi,
+            "think_yedek": bool(m.get("think_yedek")),          # düşünme bütçesi yetti → düşünmesiz soruldu
             "atıfsız": not atiflar}
 
 
