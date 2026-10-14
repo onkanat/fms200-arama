@@ -122,6 +122,13 @@ _AD_ESLEME = (
 
 SON_HATA = None                          # son sohbet çağrısı hatası (durum için)
 
+# Liste niyeti: "hangi modüller / modül listesi / modülleri listele / istasyon listesi".
+# Ölçüldü (14 Eki): bu sorularda bağlama MODUL_LISTESI'nin TABLOYU TAŞIMAYAN dilimi geliyordu
+# → model doğru davranıp "liste eksik" diyordu. Niyet tespiti tabloyu öne almak için.
+_LISTE_RE = re.compile(r"mod(ü|u)l\s*(listesi|listen|isimleri|adları)|hangi\s+mod(ü|u)l|ka(ç|c)\s+mod(ü|u)l"
+                        r"|mod(ü|u)lleri\s*(say|listele|yaz)|istasyon\s*listesi|listeyi\s*(yaz|incele)"
+                        r"|d(ö|o)k(ü|u)man(ı|i)\s*(incele|oku|yaz)", re.I)
+
 # --- Uç/model seçimi (kullanıcı kararı 14 Eki 2026) -------------------------------------------
 EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11435")          # ECE_PC · büyük modeller
 EV_MODEL = os.environ.get("FMS200_EV_MODEL", "qwen3.6:35b-a3b-coding-mtp-q4_K_M")
@@ -182,18 +189,35 @@ def uc() -> dict:
         # 240 sn dolgun; `think=true` + 8000 token → 116,6 sn (2 dk) ve muhakeme 5904 kr.
         # `think=false` → 0,2–15,7 sn, 15/15. Bu yüzden ev modunda varsayılan **kapalı**; açmak
         # isteyen `FMS200_CHAT_THINK=1` verir (o zaman bütçe otomatik 8000'e çıkar ki muhakeme bitsin).
+        #
+        # BÜTÇE (kullanıcı, 14 Eki: "bu büyük modele çok çimri davranıyoruz"): 32 GB VRAM'li 35B'ye
+        # 6500 kr bağlam + 1300 kr dilim çok azdı. Ölçüldü: 1300 kr dilim, MODUL_LISTESI tablosunun
+        # yalnız 1–5. satırını taşıyor → model "liste eksik" diyor (uydurmuyor). Ev modunda:
+        # bağlam 24.000 kr · dilim 2000 kr · dilim sayısı 6 · en çok 8 dilim.
         think = os.environ.get("FMS200_CHAT_THINK", "0") == "1"
         return {"url": EV_URL, "model": os.environ.get("FMS200_EV_MODEL", EV_MODEL),
                 "think": think, "ctx": None,
                 "en_fazla": _sayi("FMS200_CHAT_MAX", 8000 if think else 3000),
-                "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 600)), "mod": "ev"}
+                "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 600)), "mod": "ev",
+                # Bağlamı SICAK tut: ölçüldü — model boşaldıktan sonra ilk soru 179,9 sn / 2,7 tok/s
+                # (22 GB yeniden yükleme), sıcakken 5,1 sn / 66,2 tok/s. "Donma" görüntüsünün asıl kaynağı.
+                "keep_alive": os.environ.get("FMS200_CHAT_KEEP_ALIVE", "30m"),
+                "butce_kr": _sayi("FMS200_CHAT_BUTCE", 24000),
+                "dilim_kr": _sayi("FMS200_CHAT_DILIM", 2000),
+                "dilim_sayisi": _sayi("FMS200_CHAT_DILIM_SAYI", 6),
+                "sec_max": _sayi("FMS200_CHAT_SEC", 8)}
     return {"url": YEREL_URL,
             "model": (os.environ.get("FMS200_CHAT_MODEL")            # ölçüm/test yolu: tek model adı yeter
                       or os.environ.get("FMS200_YEREL_MODEL") or YEREL_MODEL),
             "think": os.environ.get("FMS200_CHAT_THINK", "0") == "1",
             "ctx": _sayi("FMS200_CHAT_CTX", 4096) or None,
             "en_fazla": _sayi("FMS200_CHAT_MAX", 600),
-            "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "yerel"}
+            "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "yerel",
+            "keep_alive": os.environ.get("FMS200_CHAT_KEEP_ALIVE", "5m"),
+            "butce_kr": _sayi("FMS200_CHAT_BUTCE", 6500),
+            "dilim_kr": _sayi("FMS200_CHAT_DILIM", 1300),
+            "dilim_sayisi": _sayi("FMS200_CHAT_DILIM_SAYI", 4),
+            "sec_max": _sayi("FMS200_CHAT_SEC", 5)}
 
 
 def cfg() -> tuple[str, str, int, int, float]:
@@ -246,15 +270,19 @@ def hedef_doc(db: str, q: str) -> str | None:
 
 
 # ------------------------------------------------------------------ bağlam kurma
-def dilimle(metin: str, boy: int = 1300, ortusme: int = 200) -> list[str]:
-    """Uzun sayfa metnini örtüşen pencerelere böler (durum dossiyeleri 30 bin kr'ya çıkabiliyor)."""
+def dilimle(metin: str, boy: int = 1300, ortusme: int = 200, en_cok: int = 4) -> list[str]:
+    """Uzun sayfa metnini örtüşen pencerelere böler (durum dossiyeleri 30 bin kr'ya çıkabiliyor).
+
+    `boy`/`en_cok` çağıran tarafından verilir: büyük modelde (ev modu) daha geniş dilim → tablo
+    ortadan kesilmesin (ölçüldü: 1300 kr dilim MODUL_LISTESI tablosunun yalnız 1–5. satırını taşıyordu).
+    """
     if not metin:
         return []
     out, i = [], 0
     while i < len(metin):
         out.append(metin[i:i + boy])
         i += max(1, boy - ortusme)
-    return out[:4]
+    return out[:max(1, en_cok)]
 
 
 def _sayfa_metni(con: sqlite3.Connection, doc: str, page) -> tuple[str, str, str]:
@@ -268,7 +296,8 @@ def _sayfa_metni(con: sqlite3.Connection, doc: str, page) -> tuple[str, str, str
 
 
 def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
-               butce_kr: int = 6500, mode: str = "hybrid") -> tuple[str, list[dict], int]:
+               butce_kr: int = 6500, mode: str = "hybrid",
+               dilim_kr: int = 1300, dilim_sayisi: int = 4, sec_max: int = 5) -> tuple[str, list[dict], int]:
     """Bağlam kurar. **Getirim iyileştirmeleri:**
 
     1. **Modül kodu yönlendirmesi:** soruda `FMS-20x` / `EST.n` varsa o dossiye ve kodun geçtiği
@@ -276,7 +305,14 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
     2. **Belge çeşitliliği:** ilk turda belge başına 1 dilim, yer kalırsa ikinci turda 2.'si.
     3. **Jenerik dossiye freni:** OZET/README/MODUL_LISTESI toplam en çok 1 dilim, en sonda (-2).
     4. Metinsiz (etiket-only/görsel) sayfa bağlama girmez; sorgu terimi geçmeyen dilim düşer.
+    5. **Liste niyeti (14 Eki ölçümü):** "hangi modüller / modül listesi / belgeyi incele-yaz" gibi
+       sorularda `MODUL_LISTESI`'nin **tabloyu taşıyan dilimi** öne alınır ve o belgeden 4 dilime izin
+       verilir. Neden: 1300 kr dilim tablonun yalnız 1–5. satırını taşıyordu → model "liste eksik" diyordu.
+    6. **Etiket satırı:** dilimin başına `--- ETİKET: … ---` eklenir (varsa). Ölçüm: etiket metni
+       modül adı/kodunu taşıyor ama prompt'a girmiyordu (çizim sayfaları metinsiz kalıyordu).
     """
+    _ = butce_kr  # okunabilirlik: bütçe aşağıda kullanılır
+    liste_niyeti = bool(_LISTE_RE.search(q or "")) or (doc == "MODUL_LISTESI")
     terimler = [t for t in re.split(r"\W+", (q or "").lower()) if len(t) > 3]
     yon = rota(q)
     isabetler = se.search(q, db=db, limit=max(1, topk), doc=doc, mode=mode)
@@ -311,8 +347,12 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
                 onem += 2                                            # etiketli çizim eşleşmesi
             if r["doc"] in _JENERIK:
                 onem -= 2                                            # jenerik dossiye freni
-            for no, d in enumerate(dilimle(metin)):
+            for no, d in enumerate(dilimle(metin, boy=dilim_kr, en_cok=dilim_sayisi)):
                 isabet = sum(d.lower().count(t) for t in terimler) + onem
+                # Liste niyeti + MODUL_LISTESI: TABLOYU taşıyan dilim öne (ölçüm: 1300 kr dilim
+                # tablonun yalnız 1–5. satırını taşıyordu; tablo dilim 0'daydı ve bağlama girmemişti).
+                if liste_niyeti and r["doc"] == "MODUL_LISTESI":
+                    isabet += 3 + min(4, len(re.findall(r"FMS-20\d", d)))
                 # Yönlendirilen dossiyenin "Kaynak referansları" satırı, manuel/teknik belge sayfa
                 # numaralarını taşır ve dilim dışında kalabiliyor (ölçüldü: Q6'da "s.92/94/96" kayboldu).
                 if r["doc"] in yon["dossiler"] and re.search(r"Kaynak referans|Manuel\s+\*\*s\.", d):
@@ -327,19 +367,25 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
     pozitif = [a for a in aday if a["isabet"] > 0]
     havuz = sorted(pozitif if len(pozitif) >= 3 else aday, key=lambda x: (-x["isabet"], x["jenerik"]))
     sec, kaynaklar, toplam, sayac, jen = [], [], 0, {}, 0
+    jen_ust = 4 if liste_niyeti else 1        # liste niyetinde jenerik belgeden 4 dilime izin (tablo!)
     for tur in (1, 2):                      # 1. tur: belge başına 1 dilim → 2. tur: ikinci dilim
         for a in havuz:
-            if len(sec) >= 5 or toplam > butce_kr * 0.9:
+            if len(sec) >= sec_max or toplam > butce_kr * 0.9:
                 break
             ust = 3 if a.get("yonlendirilmis") else tur      # yönlendirilen dossiyeden 3 dilim serbest
+            if a["doc"] in (doc, "MODUL_LISTESI") and (doc or liste_niyeti):
+                ust = max(ust, 4)          # belge ADI verildiyse / liste niyetiyse: 4 dilim (tablo bütün gelsin)
             if sayac.get(a["doc"], 0) >= ust:
                 continue
-            if a["jenerik"] and jen >= 1:                        # jenerikten en çok 1 dilim
+            if a["jenerik"] and jen >= jen_ust:
                 continue
             if toplam + a["kr"] > butce_kr:
                 continue
-            sec.append((f"--- KAYNAK: {a['doc']} · sayfa {a['page']} ---" if a["page"] is not None
-                        else f"--- KAYNAK: {a['doc']} (belge) ---") + f"\n{a['metin']}")
+            baslik = (f"--- KAYNAK: {a['doc']} · sayfa {a['page']} ---" if a["page"] is not None
+                      else f"--- KAYNAK: {a['doc']} (belge) ---")
+            if a.get("etiket"):                       # F3: etiket modül adı/kodunu taşır — prompt'a girer
+                baslik += f"\n--- ETİKET: {a['etiket']} ---"
+            sec.append(baslik + f"\n{a['metin']}")
             kaynaklar.append({k: a[k] for k in ("doc", "page", "dilim", "kr", "isabet", "etiket", "gorsel")})
             sayac[a["doc"]] = sayac.get(a["doc"], 0) + 1
             if a["jenerik"]:
@@ -410,7 +456,8 @@ def _arac_calistir(db: str | None, ad: str, args: dict) -> str:
 
 
 def _ollama_chat(mesajlar: list[dict], model: str, ctx: int | None, en_fazla: int,
-                 timeout: float, url: str, araclar: bool = False, think: bool = False) -> dict:
+                 timeout: float, url: str, araclar: bool = False, think: bool = False,
+                 keep_alive: str = "5m") -> dict:
     """Tek HTTP isteği; yanıt gövdesini döndürür.
 
     `ctx=None` → `num_ctx` **gönderilmez** (modelin sunucudaki bağlam ayarı geçerli olur).
@@ -423,7 +470,7 @@ def _ollama_chat(mesajlar: list[dict], model: str, ctx: int | None, en_fazla: in
         secenekler["num_ctx"] = ctx
     govde = {"model": model, "stream": False, "think": think, "messages": mesajlar,
              "options": secenekler,
-             "keep_alive": "5m"}
+             "keep_alive": keep_alive}
     if araclar:
         govde["tools"] = ARACLAR
     req = urllib.request.Request(f"{url}/api/chat", data=json.dumps(govde).encode("utf-8"),
@@ -498,6 +545,7 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     en_fazla = en_fazla or u["en_fazla"]
     timeout = timeout or u["timeout"]
     think = u["think"]
+    keep_alive = u.get("keep_alive", "5m")       # ev modunda 30m: model boşalmasın (179,9 sn → 5,1 sn ölçümü)
     kullanici = (f"GÖREV: {soru}\n\nMEVCUT İÇERİK:\n{baglam}" if gorev
                  else f"SORU: {soru}\n\nKAYNAKLAR:\n{baglam}")
     mesajlar: list[dict] = [{"role": "system", "content": SISTEM_GOREV if gorev else SISTEM}]
@@ -515,13 +563,13 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     for tur in range(max(1, arac_tur + 1)):
         araclari_gonder = kullan_arac and tur < arac_tur
         d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclari_gonder,
-                         think=think)
+                         think=think, keep_alive=keep_alive)
         if d.get("_destek_yok"):
             _ARAC_DESTEK[model] = False                     # modele not düş, tekrar denemeyelim
             kullan_arac = False
             araclari_gonder = False
             d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
-                             think=think)
+                             think=think, keep_alive=keep_alive)
         elif araclari_gonder:
             _ARAC_DESTEK.setdefault(model, True)            # araç kabul edildi
         if d.get("_hata"):
@@ -562,7 +610,8 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     # `think=false` ile aynı soru 0,2–15,7 sn ve 15/15. (Araç-400 yedeğiyle aynı desen.)
     think_yedek = False
     if think and len(ham.strip()) < _KISA_YANIT:
-        d2 = _ollama_chat(bas_mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False)
+        d2 = _ollama_chat(bas_mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
+                          think=False, keep_alive=keep_alive)
         ham2 = (d2.get("message") or {}).get("content") or ""
         if not d2.get("_hata") and len(ham2.strip()) > len(ham.strip()):
             d, ham, think_yedek = d2, ham2, True
@@ -674,7 +723,10 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
                 "model": m.get("model"), "url": m.get("url"), "sure_s": m.get("sure_s"),
                 "tok": m.get("tok"), "tok_s": m.get("tok_s")}
 
-    baglam, kaynaklar, kr = baglam_kur(db, q, doc=doc, topk=topk, mode=mode)
+    u = uc()
+    baglam, kaynaklar, kr = baglam_kur(db, q, doc=doc, topk=topk, mode=mode,
+                                      butce_kr=u["butce_kr"], dilim_kr=u["dilim_kr"],
+                                      dilim_sayisi=u["dilim_sayisi"], sec_max=u["sec_max"])
     if not baglam:
         return _bos_yanit(db, q)
     m = model_sor(q, baglam, model=model, ctx=ctx, en_fazla=en_fazla, db=db,
@@ -716,5 +768,7 @@ def durum() -> dict:
     u = uc()
     return {"url": u["url"], "model": u["model"], "ctx": u["ctx"], "en_fazla": u["en_fazla"],
             "think": u["think"], "mod": u["mod"], "ev_agi": ev_agi_var(),
+            "butce_kr": u["butce_kr"], "dilim_kr": u["dilim_kr"], "dilim_sayisi": u["dilim_sayisi"],
+            "sec_max": u["sec_max"], "keep_alive": u["keep_alive"],
             "son_hata": SON_HATA, "hazir": SON_HATA is None,
             "arac_destek": arac_destegi(u["model"])}     # None = henüz denenmedi

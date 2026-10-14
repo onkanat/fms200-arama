@@ -119,7 +119,9 @@ Model yoksa **arama bozulmaz** — `/api/ask` `ok:false` + kaynak listesi döner
 | `FMS200_YEREL_URL` / `FMS200_YEREL_MODEL` | `http://127.0.0.1:11434` / `gemma3:4b` | **ev ağı yoksa** |
 | `FMS200_CHAT_THINK` | `0` (kapalı) | **Ölçüldü:** açıkken aynı soru 81–240 sn ve boş/kesik yanıt; kapalıyken 0,2–15,7 sn ve 15/15. Açılırsa bütçe otomatik 8000 |
 | `FMS200_CHAT_CTX` | `4096` (`0` = sınır yok) | ev modunda **gönderilmez** (sunucu ayarı) |
-| `FMS200_CHAT_MAX` | ev: `3000` · yerel: `600` | en fazla üretilecek token |
+| `FMS200_CHAT_MAX` | ev: `3000` (`think=1` ise `8000`) · yerel: `600` | en fazla üretilecek token |
+| `FMS200_CHAT_BUTCE` · `_DILIM` · `_DILIM_SAYI` · `_SEC` | ev: `24000` kr · `2000` kr · `6` · `8` | **bağlam bütçesi** (yerel: 6500 · 1300 · 4 · 5). Büyük model + tablolu belgeler için ölçülerek büyütüldü |
+| `FMS200_CHAT_KEEP_ALIVE` | ev: `30m` · yerel: `5m` | modeli sıcak tut — boşalınca ilk soru 22 GB yeniden yükleme yüzünden **2-3 dk** sürüyordu |
 | `FMS200_CHAT_TIMEOUT` / `FMS200_CHAT_TIMEOUT_GOREV` | 120/600 · 300 | saniye |
 | `FMS200_CHAT_TOOLS` | `1` | `0` → ajan araması kapalı |
 

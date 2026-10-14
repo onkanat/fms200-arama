@@ -1,6 +1,7 @@
 """Sohbet (RAG) katmanı testleri — ağ YOK: model çağrısı monkeypatch ile taklit edilir."""
 import json
 import os
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -234,7 +235,7 @@ def test_model_arac_cagrisini_yurutur(client, monkeypatch):
     """Araç destekli model `arastir_arsiv` çağırırsa: araç çalışır, ikinci turda yanıt gelir."""
     cagrilar = []
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagrilar.append(mesajlar)
         if len(cagrilar) == 1:
             assert araclar is True, "ilk turda araç tanımı gönderilmeli"
@@ -363,7 +364,7 @@ def test_dusunme_butcesi_yetmezse_dusunmesiz_tekrar_sorulur(monkeypatch):
                                             "mod": "ev"})
     cagrilar: list[bool] = []
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagrilar.append(think)
         if think:                                                      # düşünen tur: kesik yanıt
             return {"message": {"content": "Verilen kaynaklara göre FMS-2",
@@ -384,7 +385,7 @@ def test_yeterli_yanitta_tekrar_sorulmaz(monkeypatch):
                                            "ctx": None, "en_fazla": 3000, "timeout": 60, "mod": "ev"})
     cagrilar: list[bool] = []
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagrilar.append(think)
         return {"message": {"content": "FMS-203 hidrolik pres 3. istasyondadır. " * 4},
                 "eval_count": 60, "total_duration": 1_000_000_000}
@@ -392,6 +393,50 @@ def test_yeterli_yanitta_tekrar_sorulmaz(monkeypatch):
     monkeypatch.setattr(sh, "_ollama_chat", taklit)
     m = sh.model_sor("FMS-203 nedir?", "bağlam")
     assert cagrilar == [True] and m["think_yedek"] is False, "yeterli yanıtta ikinci istek olmamalı"
+
+
+def test_liste_niyeti_tabloyu_tasiyan_dilimi_getirir(tmp_path, monkeypatch):
+    """ÖLÇÜLDÜ (14 Eki, kullanıcı testi): "modül listesi" sorusunda MODUL_LISTESI'nin TABLOYU
+    TAŞIMAYAN dilimi geliyordu (1300 kr dilim → tablonun yalnız 1–5. satırı) → model "liste eksik"
+    diyordu. Liste niyetinde tablo dilimi öne alınmalı ve belgeden 4 dilime izin verilmeli."""
+    root = os.path.join(str(tmp_path), "fms200")
+    durum = os.path.join(root, "durum")
+    os.makedirs(durum, exist_ok=True)
+    tablo = ("# FMS-200 — Modül (İstasyon) Numaraları ve Adları\n\n" + "dolgu satırı. " * 60 +
+             "\n| # | Kod | Ad (EN — kanonik) | Ad (TR) |\n|---|---|---|---|\n" +
+             "".join(f"| {i} | **FMS-{200+i}** | Modül {i} | İstasyon {i} |\n" for i in range(1, 12)) +
+             "\n" + "kuyruk metni. " * 60)
+    open(os.path.join(durum, "MODUL_LISTESI.md"), "w", encoding="utf-8").write(tablo)
+    open(os.path.join(durum, "FMS201_DURUM.md"), "w", encoding="utf-8").write("Gövde besleme modülü. " * 40)
+    db = os.path.join(str(tmp_path), "liste.db")
+    bi.build(root=root, db=db, verbose=False)
+
+    baglam, kaynaklar, kr = sh.baglam_kur(db, "FMS-200 modüler eğitim sisteminde hangi modüller var?")
+    assert kaynaklar and kaynaklar[0]["doc"] == "MODUL_LISTESI", "liste niyetinde tablo belgesi öne gelmeli"
+    assert "| 11 | **FMS-211**" in baglam, "tablonun SON satırı da bağlamda olmalı (dilim bütün gelir)"
+    assert "FMS-205" in baglam and "FMS-209" in baglam
+
+
+def test_etiket_satiri_prompta(tmp_path, monkeypatch):
+    """F3: etiket metni modül adı/kodunu taşır ama prompt'a girmiyordu → artık dilim başına girer."""
+    root = os.path.join(str(tmp_path), "fms200")
+    d = os.path.join(root, "dokuman", "Cizimler")
+    os.makedirs(os.path.join(d, "metin"), exist_ok=True)
+    open(os.path.join(d, "metin", "sayfa_001.txt"), "w", encoding="utf-8").write(
+        "rulman seçme besleme modülü çizimi " * 30)
+    db = os.path.join(str(tmp_path), "etiket.db")
+    bi.build(root=root, db=db, verbose=False)
+    con = sqlite3.connect(db)
+    try:
+        con.execute("UPDATE pages SET label=? WHERE doc='Cizimler' AND page=1",
+                    ("FMS-202 · EST.2 rulman besleme / bearing supply [C2/0-0]",))
+        con.commit()
+    finally:
+        con.close()
+
+    baglam, kaynaklar, kr = sh.baglam_kur(db, "rulman seçme besleme modülü çizimi hangi sayfada?")
+    assert "--- ETİKET: FMS-202" in baglam, "etiket satırı prompt'a girmeli"
+    assert any(k.get("etiket") for k in kaynaklar)
 
 
 def test_durum_uc_bilgisi_verir(client):
@@ -434,7 +479,7 @@ def test_metin_bicimli_arac_cagrisi_da_yurutulur(client, monkeypatch):
 
     cagri = {"n": 0}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagri["n"] += 1
         if cagri["n"] == 1:
             return {"message": {"content": '<tool_call>\n<function=arastir_arsiv>{"sorgu": "GRAFCET"}'}}
@@ -452,7 +497,7 @@ def test_duz_bicimli_tool_call_da_calisir(client, monkeypatch):
     `{"index":0,"name":"arastir_arsiv","arguments":{"sorgu":"hidrolik pres"}}` — `function` sarmalayıcısı YOK."""
     cagri = {"n": 0}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagri["n"] += 1
         if cagri["n"] == 1:
             return {"message": {"content": "", "tool_calls": [
@@ -474,7 +519,7 @@ def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):
     sh._ARAC_DESTEK.clear()
     cagri = {"n": 0, "aracli": []}
 
-    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False):
+    def taklit(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False, think=False, keep_alive="5m"):
         cagri["n"] += 1
         cagri["aracli"].append(araclar)
         if araclar:
