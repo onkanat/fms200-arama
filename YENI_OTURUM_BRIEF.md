@@ -4,6 +4,23 @@
 > Bu dosya, temiz bir oturumun 800 mesaj okumadan işe devam edebilmesi için var.
 > (Güncelleme: 13 Eki 2026 — önceki FMS-200 oturumu arşive alındı, ayrıntı §"Devir durumu".)
 
+## ECE · Sohbet (RAG) + Okul senaryosu — 14 Eki 2026'da AÇILDI
+- **Plan + tüm ölçümler:** `~/MacAir/fms-200/arastirma/ECE_SOHBET_OKUL_PLANI.md` (P0 tamamlandı,
+  P1 yazıldı; ölçüm düzenekleri aynı dizinde: `sohbet_olcum.py`, `sohbet_altin_set.json`,
+  `sohbet_olcum_sonuclari.jsonl` = 45 satır).
+- **Özellik (kodda, `dev` = `b3dbb76`):** `POST /api/ask` + arayüzde **💬 Sor** + tıklanabilir atıflar
+  (bağlamda olmayan atıf **turuncu** = uydurma uyarısı) + model yoksa "yalnız arama" davranışı.
+  `pytest` **62 geçti**; canlı çağrı: `gemma3:4b`, ~20 sn, atıflı yanıt; LAN'dan 200.
+- **Seçilen sohbet modeli (ölçülmüş):** düşünmeyen **`gemma3:4b`** (7–8/10 atıf, ~2,5 GB) —
+  `qwen3:4b` (düşünen: 110 sn/yanıt, 4/10) ve 1B sınıfı (0/10) elendi. **MLX (B) kapatıldı:**
+  aynı modelde hız eşit (66–90 ↔ 76–81 tok/s), bellek daha yüksek (1 545 MB ↔ ~540 MB).
+- **Getirim hazır, yeniden indeks gereksiz:** yerel `nomic-embed-text` = uzaktakiyle birebir aynı
+  (digest `0a109f422b47`, kosinüs 1.000000) → okulda/çevrimdışı **arama tam çalışır**.
+- **Arıza dersi (düzeltildi):** canlı örnek 28 saat **sessizce `hashing` yedeğinde** çalıştı →
+  `/api/status` artık `embed_calisiyor` + `embed_yedek` + `uyari` gösteriyor; şüphede yeniden başlat.
+- **Açık kalem:** getirim iyileştirmesi (modül kodu geçen soruda ilgili dossiye öncelik + belge
+  çeşitliliği) ve ölçüt sıkılaştırma (10 → 20 soru, sayısal alan denetimi).
+
 ## Nerede çalışıyoruz
 - **Kod deposu:** `~/Git/fms200-arama` — **`dev` dalındayız.** Durum (13 Eki, ölçüldü):
   - `dev` temiz, HEAD **`6889f29`** (= `origin/dev`; 13 Eki brief commit'i) — her iş sonunda
