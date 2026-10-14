@@ -251,9 +251,18 @@ def api_ask(payload: dict):
     except (TypeError, ValueError):
         k = 5
     mode = payload.get("mode") or "hybrid"
+    model = (payload.get("model") or "").strip() or None      # istek başına model seçimi (ölçüm/deneme)
+    ctx = payload.get("ctx")
+    en_fazla = payload.get("en_fazla")
     if not q:
         raise HTTPException(400, "q gerekli")
-    sonuc = _sh.sor(DB, q, doc=doc, topk=max(1, min(k, 10)), mode=mode)
+    try:
+        ctx = int(ctx) if ctx else None
+        en_fazla = int(en_fazla) if en_fazla else None
+    except (TypeError, ValueError):
+        ctx = en_fazla = None
+    sonuc = _sh.sor(DB, q, doc=doc, topk=max(1, min(k, 10)), mode=mode,
+                    model=model, ctx=ctx, en_fazla=en_fazla)
     return sonuc
 
 

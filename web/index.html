@@ -327,6 +327,15 @@ async function sor(){
       <div class="hata">⚠ ${esc(r.sebep||"yanıt üretilemedi")}</div>
       <div class="sor" style="margin-top:10px">Arama yine çalışıyor — yukarıdan arama yapabilirsin.</div>
       ${kaynaklar?`<div class="kaynaklar">${kaynaklar}</div>`:""}</div>`;
+  } else if(r.gorev){
+    // görev modu: TASLAK üretildi — diske yazılmaz, kullanıcı düzenleyicide onaylar
+    $("#view").innerHTML = `<div class="ask">
+      <div class="sor">✏️ taslak · ${esc(r.taslak_doc||"")} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${ms} ms</div>
+      <div class="hata" style="color:#8a93a6">Bu bir TASLAK — hiçbir şey kaydedilmedi. Aşağıdan düzenleyicide aç,
+        gözden geçir, sonra 💾 Kaydet (git kaydı o zaman oluşur).</div>
+      <div style="margin:8px 0"><button id="taslakac">✏️ Düzenleyicide aç (taslak)</button></div>
+      <div class="yanit">${esc(r.taslak||"")}</div></div>`;
+    $("#taslakac").onclick = () => editorAc(r.taslak_doc, r.taslak||"");
   } else {
     $("#view").innerHTML = `<div class="ask">
       <div class="sor">💬 ${esc(q)} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${r.kaynaklar.length} kaynak (${r.baglam_kr} kr) · ${ms} ms</div>

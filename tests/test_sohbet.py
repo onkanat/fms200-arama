@@ -19,6 +19,15 @@ def client(tmp_path, monkeypatch):
     uzun = ("FMS-200 GRAFCET istasyon dizisi. " * 120) + "PROFIBUS bornero X3 kapak KPK-5."
     open(os.path.join(d, "metin", "sayfa_001.txt"), "w", encoding="utf-8").write(uzun)
     open(os.path.join(d, "sayfalar", "sayfa_001.jpg"), "wb").write(b"\xff\xd8" + b"0" * 5000)
+    # durum dossiyeleri: kod yönlendirmesi + jenerik fren testleri için
+    durum = os.path.join(root, "durum")
+    os.makedirs(durum, exist_ok=True)
+    open(os.path.join(durum, "FMS204_DURUM.md"), "w", encoding="utf-8").write(
+        "# FMS-204 · Mil seçme-besleme\n\n**İstasyon:** 4 · **Kod:** FMS-204 · Yükseklik ölçer mil "
+        "seçme modülü, pnömatik silindir ve döner tabla içerir. " * 3)
+    open(os.path.join(durum, "MODUL_DURUM_OZET.md"), "w", encoding="utf-8").write(
+        "# Modül Durum Dossiyeleri — Özet\n\nHer modül için ayrı dossiye: FMS201 … FMS208. "
+        "Mil seçme modülü FMS-204 istasyon 4'tür. " * 3)
     db = os.path.join(str(tmp_path), "t.db")
     bi.build(root=root, db=db, verbose=False)
     monkeypatch.setattr(appmod, "DB", db)
@@ -109,3 +118,81 @@ def test_status_calisma_ani_arka_ucunu_ve_sohbeti_bildirir(client, monkeypatch):
     assert j["embed_calisiyor"] == "hashing"
     assert j["sohbet"]["model"] == "test-model"
     assert "embed_yedek" in j and "uyari" in j
+
+
+# ------------------------------------------------------------------ getirim iyileştirmesi
+def test_rota_kod_ve_istasyonu_cozer():
+    r = sh.rota("FMS-204 modülünde yükseklik ölçer")
+    assert r["dossiler"] == {"FMS204_DURUM"} and "FMS-204" in r["kodlar"]
+    r2 = sh.rota("EST.6 vida besleme arızası")
+    assert r2["est"] == {6} and "FMS-206" in r2["kodlar"] and "FMS206_DURUM" in r2["dossiler"]
+    assert sh.rota("GRAFCET nedir")["kodlar"] == set()
+
+
+def test_kod_yonlendirmesi_ilgili_dossiyeyi_one_alir(client):
+    """Ölçülen kusur: 'FMS-204' sorusunda getirim jenerik OZET'i öne alıyordu."""
+    baglam, kaynaklar, _ = sh.baglam_kur(appmod.DB, "FMS-204 mil seçme yükseklik ölçer")
+    assert kaynaklar, "aday bulunmalı"
+    assert kaynaklar[0]["doc"] == "FMS204_DURUM", f"ilk kaynak {kaynaklar[0]['doc']} oldu"
+
+
+def test_jenerik_dossiyeden_en_cok_bir_dilim(client):
+    _, kaynaklar, _ = sh.baglam_kur(appmod.DB, "FMS-204 mil seçme modülü özet")
+    jen = [k for k in kaynaklar if k["doc"] in sh._JENERIK]
+    assert len(jen) <= 1, "OZET/README/LISTE'den en çok 1 dilim bağlama girer"
+
+
+def test_gorev_cumlesi_ve_hedef_dokuman(client):
+    q = "FMS200_Z dosyasını yeniden yaz"
+    assert sh.gorev_mi(q) is True
+    assert sh.gorev_mi("GRAFCET nedir") is False
+    assert sh.hedef_doc(appmod.DB, q) == "FMS200_Z"
+    assert sh.hedef_doc(appmod.DB, "FMS-204 dossisini güncelle") == "FMS204_DURUM"
+
+
+def test_api_ask_gorev_taslagi_uretir_ve_diske_yazmaz(client, monkeypatch):
+    """Görev modu: taslak döner, dosya DEĞİŞMEZ (yazma yalnız kullanıcı onayıyla düzenleyicide)."""
+    yol = os.path.join(appmod._root(), "dokuman", "FMS200_Z", "metin", "sayfa_001.txt")
+    onceki = open(yol, encoding="utf-8").read()
+    yakalanan = {}
+
+    def taklit(soru, baglam, *a, **k):
+        yakalanan["gorev"] = k.get("gorev")
+        yakalanan["baglam_kr"] = len(baglam)
+        return {"yanit": "# FMS-200 Z\n\n## 1. Yeni başlık\n", "ham": "", "sure_s": 2.0,
+                "tok": 20, "tok_s": 10.0, "model": "test-model", "url": "http://x"}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "FMS200_Z dosyasını yeniden yaz"}).json()
+    assert j["ok"] is True and j["gorev"] is True and j["taslak_doc"] == "FMS200_Z"
+    assert j["taslak"].startswith("# FMS-200 Z")
+    assert yakalanan["gorev"] is True and yakalanan["baglam_kr"] > 0
+    assert open(yol, encoding="utf-8").read() == onceki, "taslak üretmek dosyayı YAZMAMALI"
+
+
+def test_api_ask_model_gecersizse_eski_davranis(client, monkeypatch):
+    gelen = {}
+    monkeypatch.setattr(sh, "sor", lambda db, q, **k: (gelen.update(k), {"ok": True, "yanit": "x"})[1])
+    client.post("/api/ask", json={"q": "soru", "model": "deneme:4b", "ctx": 8192, "k": 3})
+    assert gelen["model"] == "deneme:4b" and gelen["ctx"] == 8192 and gelen["topk"] == 3
+
+
+# ------------------------------------------------------------------ sağlamlık (ölçümde çıkan kusurlar)
+def test_atif_ayristirma_fazladan_alanli_atfi_tanir():
+    """Ölçümde model `[FMS206_DURUM, sayfa None, dilim 2]` yazdı ve atıf tanınmadı."""
+    a = sh.atiflari_ayikla("... [FMS206_DURUM, sayfa None, dilim 2]. Ayrıca [FMS203_DURUM, sayfa 3].")
+    assert ("FMS206_DURUM", None) in a and ("FMS203_DURUM", 3) in a
+
+
+def test_atif_ayristirma_cumleyi_ve_markdown_baglantiyi_atlar():
+    a = sh.atiflari_ayikla("[bu bir düz cümle, sayfa 3] ve [https://ornek.com, 1] ve [FMS202_DURUM]")
+    assert a == [("FMS202_DURUM", None)]
+
+
+def test_kaynak_bulunamayinca_yol_gosterir(client, monkeypatch):
+    """Ölçümde arşivde olmayan soru boş dönüyordu (çıkmaz sokak). Artık 'bulamadım' + öneri."""
+    monkeypatch.setattr(sh, "model_sor", lambda *a, **k: {"yanit": "", "ham": "", "hata": "çağrılmamalı"})
+    j = client.post("/api/ask", json={"q": "zzzqqq wwweee"}).json()
+    assert j["ok"] is True and j["bos"] is True
+    assert "arşivde bulamadım" in j["yanit"].lower()
+    assert "daralt" in j["yanit"].lower()
