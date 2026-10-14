@@ -439,6 +439,46 @@ def test_etiket_satiri_prompta(tmp_path, monkeypatch):
     assert any(k.get("etiket") for k in kaynaklar)
 
 
+def test_eksik_yanitta_koddan_ek_arama_yapilir(client, monkeypatch):
+    """ÖLÇÜLDÜ (14 Eki, kullanıcı gözlemi): model "bağlamda eksik" diyor ama `arastir_arsiv`
+    aracını KENDİLİĞİNDEN çağırmıyor → kullanıcı eksik yanıt alıyor. Çare: kod bir kez ek arama
+    yapar ve yeniden sorar; yeni yanıt eksiklik iddiasını sürdürmüyorsa kabul edilir."""
+    cagri = {"n": 0, "baglamlar": []}
+
+    def taklit(soru, baglam, **k):
+        cagri["n"] += 1
+        cagri["baglamlar"].append(baglam)
+        if cagri["n"] == 1:
+            return {"yanit": "KPK-5 kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0,
+                    "tok": 10, "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                    "arac_sorgulari": [], "think_yedek": False}
+        return {"yanit": "KPK-5, **FMS-205** (kapak seçme) istasyonunun kodudur [FMS200_Z, sayfa 1].",
+                "ham": "", "sure_s": 1.0, "tok": 20, "tok_s": 10.0, "model": "m", "url": "http://x",
+                "hata": None, "arac_sorgulari": [], "think_yedek": False}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
+    assert cagri["n"] == 2, "model aracı çağırmadıysa kod bir kez daha sormalıydı"
+    assert "EK ARAMA SONUÇLARI" in cagri["baglamlar"][1], "ikinci istem ek arama bağlamını taşımalı"
+    assert j["ek_arama"] is True and j["ek_arama_kabul"] is True and "FMS-205" in j["yanit"]
+
+
+def test_arac_kullanildiysa_ek_arama_yapilmaz(client, monkeypatch):
+    """Model aracı ZATEN çağırdıysa kod ikinci kez aramaz (gereksiz gecikme olmasın)."""
+    cagri = {"n": 0}
+
+    def taklit(soru, baglam, **k):
+        cagri["n"] += 1
+        return {"yanit": "Kaynaklarda yer almamaktadır.", "ham": "", "sure_s": 1.0, "tok": 10,
+                "tok_s": 10.0, "model": "m", "url": "http://x", "hata": None,
+                "arac_sorgulari": ["GRAFCET"], "think_yedek": False}
+
+    monkeypatch.setattr(sh, "model_sor", taklit)
+    j = client.post("/api/ask", json={"q": "KPK-5 hangi modülün kodudur? PROFIBUS bornero"}).json()
+    assert cagri["n"] == 1 and j["ek_arama"] is False
+    assert j["arac_sorgulari"] == ["GRAFCET"]
+
+
 def test_durum_uc_bilgisi_verir(client):
     """Durum ucu: hangi modda, hangi model, think açık mı — ECE hiçbir şey ayarlamadan görünür."""
     d = sh.durum()

@@ -46,7 +46,17 @@ SISTEM = (
 )
 
 # Küçük hatırlatıcı (ikinci system mesajı): yük bindirmez, işi aklında tutar.
-HATIRLATMA = "Hatırlatma: yalnız KAYNAKLAR'dan yanıtla, uydurma; atıfları [belge, sayfa N] yaz."
+HATIRLATMA = ("Hatırlatma: yalnız KAYNAKLAR'dan yanıtla, uydurma; atıfları [belge, sayfa N] yaz. "
+              "Bağlam yetmiyorsa \"kaynaklarda yok\" yazmadan ÖNCE `arastir_arsiv` aracını çağır.")
+
+# Modelin "bağlam yetmedi" dediğini gösteren kalıplar. Ölçüldü (14 Eki): model eksikliğin farkında
+# ama aracı KENDİLİĞİNDEN çağırmıyor (aynı davranış nemotron'da 0/6) → kullanıcı eksik yanıt alıyor.
+# Çare: bu kalıp görülür ve araç çağrılmamışsa **koddan** bir kez ek arama yapıp tekrar sormak.
+_EKSIK_RE = re.compile(r"bulunmamaktad|bulunamad|bulunmuyor|bulunmaz|eksiktir|eksik olduğu|"
+                       r"yer almamaktad|yer almıyor|yer verilmemiş|kesitte yer|listelenmemiş|"
+                       r"mevcut değil|bilgi yok|tam liste|bilgi bulunmuyor|kapsamamaktad|kapsamıyor|"
+                       r"içermemektedir|içermiyor|adı geçm|geçmemektedir|geçmiyor|arşivde yok|"
+                       r"kaynaklarda yok|söz konusu değil|yoktur", re.I)
 
 # Modelin kullanabileceği TEK araç: arşivde ek arama (tek adımlık ajan davranışı).
 ARACLAR = [{
@@ -297,7 +307,8 @@ def _sayfa_metni(con: sqlite3.Connection, doc: str, page) -> tuple[str, str, str
 
 def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
                butce_kr: int = 6500, mode: str = "hybrid",
-               dilim_kr: int = 1300, dilim_sayisi: int = 4, sec_max: int = 5) -> tuple[str, list[dict], int]:
+               dilim_kr: int = 1300, dilim_sayisi: int = 4, sec_max: int = 5,
+               yonlendirme: bool = True) -> tuple[str, list[dict], int]:
     """Bağlam kurar. **Getirim iyileştirmeleri:**
 
     1. **Modül kodu yönlendirmesi:** soruda `FMS-20x` / `EST.n` varsa o dossiye ve kodun geçtiği
@@ -314,7 +325,10 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
     _ = butce_kr  # okunabilirlik: bütçe aşağıda kullanılır
     liste_niyeti = bool(_LISTE_RE.search(q or "")) or (doc == "MODUL_LISTESI")
     terimler = [t for t in re.split(r"\W+", (q or "").lower()) if len(t) > 3]
-    yon = rota(q)
+    # `yonlendirme=False`: modül kodu yönlendirmesi KAPATILIR. Ek arama için şart — ölçüldü (14 Eki):
+    # "FMS-202'de KPK-5..." sorusunda yönlendirme bağlamı FMS202_DURUM'a kilitliyor; ek arama da
+    # aynı soruyla yapıldığı için yine aynı belgeyi getiriyordu (doğru belge FMS205_DURUM'da kalıyordu).
+    yon = rota(q) if yonlendirme else {"dossiler": set(), "kodlar": set(), "est": set()}
     isabetler = se.search(q, db=db, limit=max(1, topk), doc=doc, mode=mode)
     # Çok dilli arama: arşivin çoğu EN/ES; TR sorgu tek başına o sayfaları getirmiyor.
     if not doc:
@@ -736,6 +750,25 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
                 "yanit": "", "kaynaklar": kaynaklar, "atiflar": [], "baglam_kr": kr}
     atiflar = _atif_esle(m["yanit"], kaynaklar)
     yanit = m["yanit"]
+    # --- Deterministik ek arama (14 Eki): model "bağlamda yok/eksik" dedi ama ARACI ÇAĞIRMADIYSA
+    # koddan bir kez daha ara ve tekrar sor. Model tercihine bırakılmaz (ölçüm: kendiliğinden
+    # çağırmıyor). Yeni yanıt eksiklik iddiasını sürdürüyorsa **eski yanıt korunur** (kötüleştirmez).
+    ek_arama, ek_arama_kabul = False, False
+    if not (m.get("arac_sorgulari") or []) and _EKSIK_RE.search(yanit or ""):
+        # Ek arama YÖNLENDİRMESİZ ve daha geniş (topk 8): aksi hâlde aynı modül yönlendirmesi
+        # bağlamı yine aynı dossiye kilitler (ölçüldü: "FMS-202'de KPK-5" → doğru belge FMS205_DURUM'da).
+        ek, ek_kaynak, _ = baglam_kur(db, q, topk=8, butce_kr=8000, dilim_kr=2000,
+                                      dilim_sayisi=4, sec_max=5, yonlendirme=False)
+        if ek:
+            ek_arama = True                       # ek arama YAPILDI (yanıt değişmese de görünür olsun)
+            m2 = model_sor(q, baglam + "\n\nEK ARAMA SONUÇLARI:\n" + ek, model=model, ctx=ctx,
+                           en_fazla=en_fazla, db=db, araclar=False)
+            y2 = (m2 or {}).get("yanit") or ""
+            if y2.strip() and not _EKSIK_RE.search(y2):
+                m, yanit, ek_arama_kabul = m2, y2, True
+                kaynaklar = kaynaklar + [k for k in ek_kaynak
+                                         if (k["doc"], k["page"]) not in {(x["doc"], x["page"]) for x in kaynaklar}]
+    atiflar = _atif_esle(yanit, kaynaklar)
     atif_eklendi = False
     if not atiflar and kaynaklar:
         # Atıf disiplini: içerik doğru olabiliyor ama model zaman zaman atıf koymuyor
@@ -757,6 +790,8 @@ def sor(db: str, q: str, doc: str | None = None, topk: int = 5, mode: str = "hyb
             "sure_s": m.get("sure_s"), "tok": m.get("tok"), "tok_s": m.get("tok_s"),
             "arac_sorgulari": m.get("arac_sorgulari") or [], "atif_eklendi": atif_eklendi,
             "think_yedek": bool(m.get("think_yedek")),          # düşünme bütçesi yetti → düşünmesiz soruldu
+            "ek_arama": ek_arama,                               # model "eksik" dedi → koddan ek arama yapıldı
+            "ek_arama_kabul": ek_arama_kabul,                    # ek arama yanıtı değiştirdi mi
             "atıfsız": not atiflar}
 
 
