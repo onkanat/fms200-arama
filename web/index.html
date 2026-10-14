@@ -70,6 +70,19 @@
  #kaydet{background:#2a6f4e;color:#eafff4}
  #iptal{background:#3a2222;color:#ffd9d9}
  .gecmis{color:var(--mut);font-size:12.5px}
+ /* 💬 Sor (RAG) paneli */
+ #sorbtn{background:#2a6f4e;color:#eafff4}
+ .ask{border:1px solid var(--br);border-radius:10px;background:#0d0f13;padding:14px 16px}
+ .ask .sor{color:var(--mut);font-size:12.5px;margin-bottom:8px}
+ .ask .yanit{font-size:14.5px;line-height:1.65;white-space:pre-wrap}
+ .at{display:inline-block;background:#12233a;border:1px solid #26456b;color:#cfe2ff;border-radius:6px;
+     padding:1px 7px;margin:2px 3px 0 0;font-size:12px;cursor:pointer}
+ .at:hover{border-color:var(--acc)} .at.bilinmez{border-color:#6b4a26;color:#ffd9a8}
+ .kaynaklar{display:grid;gap:6px;margin-top:10px}
+ .kaynak{display:flex;gap:8px;align-items:center;font-size:12.5px;color:#cfd6e4;
+   border-top:1px solid var(--br);padding-top:6px;cursor:pointer}
+ .kaynak:hover{color:#fff}
+ .ask .hata{color:#ffce6a;font-size:13.5px}
  @media(max-width:820px){
    main{grid-template-columns:1fr} #list{max-height:34vh}
    .edt{grid-template-columns:1fr} .onizleme{display:none}
@@ -86,6 +99,7 @@
    <option value="semantic">Anlam</option>
  </select>
  <button id="go">Ara</button>
+ <button id="sorbtn" title="Arşive soru sor — yerel model, atıflı yanıt">💬 Sor</button>
  <select id="docsel" title="Belgeye gözat (şemalar dahil)"><option value="">📄 Belge gözat…</option></select>
  <span id="stat"></span>
  <button id="reindex" title="Arşivi yeniden indeksle">⟳ İndeks</button>
@@ -283,12 +297,63 @@ $("#kaydet").onclick = async () => {
 $("#iptal").onclick = editorKapat;
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && $("#modal").classList.contains("acik")) editorKapat(); });
 
+// ---- 💬 Sor (RAG): arşive soru sor, atıflı yanıt al ----
+// Not: yanıt/kaynak metinleri şablona gömülürken `esc()` ile kaçırılıyor (dosyadaki diğer
+// bölümlerle aynı kural); içerik yerel arşiv DB'sinden ve yerel modelden gelir, dış kaynak yok.
+async function sor(){
+  const q = ($("#q").value.trim() || prompt("Arşive sorulacak soru:") || "").trim();
+  if(!q) return;
+  const doc = (seciliDoc && $("#askyalniz") && $("#askyalniz").checked) ? seciliDoc : "";
+  $("#view").innerHTML = '<div class="ask"><div class="sor">💬 düşünülüyor… (yerel model; 8 GB makinede 10-30 sn sürebilir)</div></div>';
+  const t0 = performance.now();
+  let r;
+  try{
+    r = await fetch("/api/ask", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q, doc, k:5})}).then(x=>x.json());
+  }catch(e){ $("#view").innerHTML = `<div class="ask"><div class="hata">istek hatası: ${esc(String(e))}</div></div>`; return; }
+  const ms = Math.round(performance.now()-t0);
+  const atlar = (r.atiflar||[]).map(a=>{
+    const et = a.page!=null ? `s.${a.page}` : "belge";
+    return `<span class="at${a.tanindi?"":" bilinmez"}" data-doc="${esc(a.doc)}" data-page="${a.page??''}"
+      title="${a.tanindi?"bağlamdaki kaynak":"bu atıf bağlamda yok (model uydurabilir)"}">🏷 ${esc(a.doc)} · ${et}</span>`;
+  }).join(" ");
+  const kaynaklar = (r.kaynaklar||[]).map(k=>`<div class="kaynak" data-doc="${esc(k.doc)}" data-page="${k.page??''}">
+      <span class="tag">${esc(k.doc)}</span><span>${k.page!=null?("s."+k.page):"belge"}</span>
+      ${k.etiket?`<span class="tag" style="background:#2a6f4e;color:#eafff4">🏷 ${esc(k.etiket.slice(0,50))}</span>`:""}
+      <span style="flex:1"></span><span>${k.kr} kr</span></div>`).join("");
+  if(!r.ok){
+    $("#view").innerHTML = `<div class="ask">
+      <div class="sor">💬 ${esc(q)}</div>
+      <div class="hata">⚠ ${esc(r.sebep||"yanıt üretilemedi")}</div>
+      <div class="sor" style="margin-top:10px">Arama yine çalışıyor — yukarıdan arama yapabilirsin.</div>
+      ${kaynaklar?`<div class="kaynaklar">${kaynaklar}</div>`:""}</div>`;
+  } else {
+    $("#view").innerHTML = `<div class="ask">
+      <div class="sor">💬 ${esc(q)} · ${esc(r.model||"")} · ${r.sure_s??"-"} sn · ${r.tok_s??"-"} tok/s · ${r.kaynaklar.length} kaynak (${r.baglam_kr} kr) · ${ms} ms</div>
+      <div class="yanit">${esc(r.yanit||"(boş yanıt)")}</div>
+      ${r["atıfsız"]?'<div class="hata">⚠ yanıt atıf içermiyor — kaynak sayfasını kendin doğrula</div>':""}
+      <div style="margin-top:8px">${atlar}</div>
+      <label class="sor" style="display:block;margin-top:10px"><input type="checkbox" id="askyalniz">
+        sonraki soruda yalnız açık belgeye bak</label>
+      <div class="kaynaklar">${kaynaklar}</div></div>`;
+  }
+  document.querySelectorAll(".at,.kaynak").forEach(el=>el.onclick=()=>ac(el.dataset.doc, el.dataset.page||null));
+}
+$("#sorbtn").onclick = sor;
+
 // ---- indeks durumu / yeniden indeksle ----
 async function durumYukle(){
   try{
     const s = await fetch("/api/status").then(x=>x.json());
     const tag = s.bayat ? `<span style="color:#ffce6a">⚠ bayat</span>` : `✔`;
-    $("#stat").innerHTML = `${s.kayit} kayıt · embed:${s.embed}${s.model?(" ("+s.model+")"):""} ${tag}`;
+    // arka uç: indekslenirken kullanılan (`embed`) ile ŞU AN sorguda kullanılan (`embed_calisiyor`)
+    // ayrılınca sessiz hashing düşüşü görünür olur
+    const gercek = s.embed_calisiyor && s.embed_calisiyor !== s.embed
+      ? `<span style="color:#ffce6a"> · şu an:${s.embed_calisiyor}</span>` : "";
+    const soh = s.sohbet ? (s.sohbet.son_hata
+      ? `<span style="color:#ffce6a"> · 💬 model yok</span>` : ` · 💬 ${esc(s.sohbet.model||"")}`) : "";
+    $("#stat").innerHTML = `${s.kayit} kayıt · embed:${s.embed}${s.model?(" ("+s.model+")"):""}${gercek} ${tag}${soh}`;
+    if(s.uyari) $("#stat").innerHTML += `<div style="color:#ffce6a">⚠ ${esc(s.uyari)}</div>`;
   }catch(e){}
 }
 $("#reindex").onclick = async () => {

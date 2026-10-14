@@ -7,11 +7,13 @@
 import os
 import sqlite3
 import subprocess
+import time
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import search as se
+from . import sohbet as _sh
 from . import build_index as _bi
 from . import vec as _vec
 from .norm import norm
@@ -213,7 +215,7 @@ def api_history(doc: str, limit: int = 20):
 
 @app.get("/api/status")
 def api_status():
-    """İndeks durumu: arka uç, kayıt sayısı, DB yaşı."""
+    """İndeks durumu: arka uç, kayıt sayısı, DB yaşı, **çalışma anındaki** gömme arka ucu, sohbet."""
     con = sqlite3.connect(DB)
     n = con.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
     lbl = con.execute("SELECT COUNT(*) FROM pages WHERE label IS NOT NULL AND label<>''").fetchone()[0]
@@ -221,9 +223,38 @@ def api_status():
     con.close()
     db_mtime = os.path.getmtime(DB)
     arsiv_mtime = _en_yeni_mtime(_root())
+    # `embed` = İNDEKS anındaki arka uç (meta); `embed_calisiyor` = ŞU AN sorguda kullanılan arka uç.
+    # İkisi ayrılınca sessiz hashing düşüşü görünür hâle gelir (search.SON_YEDEK).
+    calisan = _vec.runtime_backend()
+    yedek = dict(se.SON_YEDEK) if se.SON_YEDEK else None
+    if yedek:
+        yedek["yas_s"] = round(time.time() - yedek.get("zaman", time.time()), 1)
     return {"kayit": n, "etiketli": lbl, "embed": meta.get("embed_backend", "?"),
             "model": meta.get("embed_model", ""), "db": db_mtime,
-            "arsiv_en_yeni": arsiv_mtime, "bayat": arsiv_mtime > db_mtime + 1}
+            "arsiv_en_yeni": arsiv_mtime, "bayat": arsiv_mtime > db_mtime + 1,
+            "embed_calisiyor": calisan, "embed_yedek": yedek,
+            "uyari": (f"anlamsal arama HASHING yedeğinde (beklenen: {yedek.get('beklenen')}) — "
+                      f"gömme sunucusu erişilemiyor" if yedek and calisan != "server" else None),
+            "sohbet": _sh.durum()}
+
+
+@app.post("/api/ask")
+def api_ask(payload: dict):
+    """Arşiv hakkında soru sor: hibrit arama → bağlam → **yerel** model → atıflı yanıt.
+
+    Model yoksa `ok:false` + `sebep` döner (arayüz yalnız aramayı gösterir); kaynaklar yine listelenir.
+    """
+    q = (payload.get("q") or "").strip()
+    doc = (payload.get("doc") or "").strip() or None
+    try:
+        k = int(payload.get("k") or 5)
+    except (TypeError, ValueError):
+        k = 5
+    mode = payload.get("mode") or "hybrid"
+    if not q:
+        raise HTTPException(400, "q gerekli")
+    sonuc = _sh.sor(DB, q, doc=doc, topk=max(1, min(k, 10)), mode=mode)
+    return sonuc
 
 
 @app.post("/api/reindex")

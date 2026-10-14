@@ -8,6 +8,7 @@ import argparse
 import os
 import re
 import sqlite3
+import time
 
 from .norm import norm
 from .vec import embed_batch, cosine, from_blob
@@ -15,6 +16,7 @@ from .vec import embed_batch, cosine, from_blob
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(HERE, "..", "data", "fms200.db")
 RRF_K = 60
+SON_YEDEK = None          # anlamsal aramada hashing yedeğine düşüldüyse {zaman, sebep, beklenen}
 
 
 def _fts_query(q: str) -> str:
@@ -56,6 +58,7 @@ def _lexical(con, fts_q, lang, doc, limit):
 
 def _semantic(con, q, lang, doc, pool):
     """Sorguyu DB'deki vektörlerle karşılaştırır (vektörler DB'de saklı)."""
+    global SON_YEDEK
     wsql, args = _where(lang, doc)
     sql = "SELECT id,vector FROM pages"
     if wsql:
@@ -64,9 +67,13 @@ def _semantic(con, q, lang, doc, pool):
     backend = _meta(con, "embed_backend", "hashing")
     try:
         qv = embed_batch([q], backend=backend)[0]
-    except Exception:
+    except Exception as e:
         qv = embed_batch([q], backend="hashing")[0]
         backend = "hashing"
+        # SESSİZ düşüş yok: durum ucunda görünsün (2026-10-14: canlı örnek 28 saat fark edilmeden
+        # hashing'de çalıştı çünkü /api/status yalnız İNDEKS anındaki arka ucu gösteriyordu).
+        SON_YEDEK = {"zaman": time.time(), "sebep": f"{type(e).__name__}: {str(e)[:120]}",
+                     "beklenen": _meta(con, "embed_backend", "?")}
     scored = []
     for rid, blob in rows:
         if not blob:
