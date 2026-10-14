@@ -30,6 +30,20 @@ http://192.168.x.y:8765
 - **Notebook'ta:** tarayıcıdan `http://localhost:8765`
 - **Telefonda:** `http://192.168.x.y:8765`  (telefon **aynı wifi**'de olmalı)
 
+## 3b. 💬 Sor — belgeler hakkında soru sorma
+
+Aramanın yanında **💬 Sor** düğmesi vardır: soruyu yazarsın, arşivden bağlam bulunur ve **atıflı**
+yanıt gelir. Atıflar tıklanabilir; bağlamda olmayan atıf **turuncu** işaretlenir.
+
+- **Ev ağındaysan hiçbir şey ayarlamazsın:** uygulama ECE_PC'deki büyük modeli görürse
+  **kendiliğinden** ona geçer (daha hızlı ve daha isabetli).
+- **Ev ağında değilsen (okul):** **yerel** `gemma3:4b` kullanılır — internet gerekmez.
+  `basla.sh` bu modeli **yoksa indirmeyi dener**; indiremezsen sohbet kapalı kalır, **arama yine çalışır**.
+- Hangi modelde olduğunu arayüzün durum çubuğunda / `http://localhost:8765/api/status` içindeki
+  `sohbet` alanında görürsün (`mod`, `model`, `think`).
+- **Sohbet yalnız arşivden konuşur:** bilmediğini "arşivde bulamadım" diye söyler; kaynakta olmayan
+  bilgi eklemesin diye yanıtlar atıflarla denetlenir.
+
 ## 4. Kim ne yaptı (git)
 
 Sağ üstteki **👤** düğmesine basıp **adını yaz**. Bundan sonra her düzenleme o adla **git'e işlenir**.
