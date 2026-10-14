@@ -52,6 +52,21 @@ _EST_RE = re.compile(r"(?:EST|istasyon|İstasyon)[\s\.\-]*(\d)", re.I)
 _JENERIK = {"MODUL_DURUM_OZET", "MODUL_LISTESI", "README"}  # dizin dossiyeleri: fren
 _GOREV_RE = re.compile(r"(yeniden\s+yaz|baştan\s+yaz|güncelle|düzenle|taslak|kısalt|özetle)", re.I)
 
+# Modül ADI → kod eşlemesi (MODUL_LISTESI'nden). Ölçüldü: "vida besleme modülü ... arıza tablosu"
+# gibi sorularda kod geçmediği için yönlendirme tetiklenmiyordu ve ilgili dossiye bağlama girmiyordu
+# → kanıt bağlamda olmadığı için HİÇBİR model doğru yanıt veremiyordu (6/6 soruda ölçüldü).
+_AD_ESLEME = (
+    (r"g[öo]vde|body\s*supply|base\s*feed", "201"),
+    (r"rulman|bearing", "202"),
+    (r"hidrolik|hydraulic|pres\b|press\b", "203"),
+    (r"\bmil\b|shaft", "204"),
+    (r"kapak|cover", "205"),
+    (r"vida|screw", "206"),
+    (r"robot|vidalama|screwing", "207"),
+    (r"depo|warehouse|almac", "208"),
+    (r"transfer", "211"),
+)
+
 SON_HATA = None                          # son sohbet çağrısı hatası (durum için)
 
 
@@ -84,6 +99,9 @@ def rota(q: str) -> dict:
     for e in _EST_RE.findall(q or ""):
         est.add(int(e))
         kodlar.add(f"FMS-20{e}")
+    for kalip, kod in _AD_ESLEME:                       # modül ADI → kod (kod geçmeyen sorularda şart)
+        if re.search(kalip, q or "", re.I):
+            kodlar.add(f"FMS-{kod}")
     dossiler = {f"FMS{k[4:]}_DURUM" for k in kodlar if re.fullmatch(r"FMS-20[1-8]", k)}
     return {"dossiler": dossiler, "kodlar": kodlar, "est": est}
 
@@ -169,10 +187,16 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
             if r["doc"] in _JENERIK:
                 onem -= 2                                            # jenerik dossiye freni
             for no, d in enumerate(dilimle(metin)):
-                aday.append({"isabet": sum(d.lower().count(t) for t in terimler) + onem,
+                isabet = sum(d.lower().count(t) for t in terimler) + onem
+                # Yönlendirilen dossiyenin "Kaynak referansları" satırı, manuel/teknik belge sayfa
+                # numaralarını taşır ve dilim dışında kalabiliyor (ölçüldü: Q6'da "s.92/94/96" kayboldu).
+                if r["doc"] in yon["dossiler"] and re.search(r"Kaynak referans|Manuel\s+\*\*s\.", d):
+                    isabet += 5
+                aday.append({"isabet": isabet,
                              "kr": len(d), "doc": r["doc"], "page": r["page"], "dilim": no,
                              "metin": d, "etiket": etiket, "gorsel": gorsel,
-                             "jenerik": r["doc"] in _JENERIK})
+                             "jenerik": r["doc"] in _JENERIK,
+                             "yonlendirilmis": r["doc"] in yon["dossiler"]})
     finally:
         con.close()
     pozitif = [a for a in aday if a["isabet"] > 0]
@@ -182,7 +206,8 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
         for a in havuz:
             if len(sec) >= 5 or toplam > butce_kr * 0.9:
                 break
-            if sayac.get(a["doc"], 0) >= tur:
+            ust = 3 if a.get("yonlendirilmis") else tur      # yönlendirilen dossiyeden 3 dilim serbest
+            if sayac.get(a["doc"], 0) >= ust:
                 continue
             if a["jenerik"] and jen >= 1:                        # jenerikten en çok 1 dilim
                 continue
