@@ -619,3 +619,123 @@ def test_arac_desteklemeyen_modelde_aracsiz_devam_eder(client, monkeypatch):
     cagri["aracli"].clear()
     sh.model_sor("soru2", "bağlam", model="arac-desteklemeyen:1b", db=appmod.DB, araclar=True)
     assert cagri["aracli"] == [False]
+
+
+# ---------------------------------------------------------------- strata (bizim kopya, 18 Kas 2026)
+def test_strata_env_verilince_ucta_strata_secilir(monkeypatch):
+    """Bizim kopya geliştirme/test için strata'yı kullanır: `FMS200_STRATA_URL` → mod="strata",
+    api="openai" (ollama DEĞİL), bağlam sınırı gönderilmez (sunucuda 262K sabit). Ev ağı açık olsa
+    bile strata önce gelir."""
+    monkeypatch.setattr(sh, "STRATA_URL", "http://192.168.1.105:8080")
+    monkeypatch.setattr(sh, "strata_var", lambda *a, **k: True)
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    monkeypatch.setenv("FMS200_STRATA_KEY", "test-anahtar")
+    u = sh.uc()
+    assert u["mod"] == "strata" and u["api"] == "openai"
+    assert u["model"] == "qwen3.8-flash-next" and u["ctx"] is None
+    assert u["anahtar"] == "test-anahtar"
+    d = sh.durum()
+    assert d["anahtar_var"] is True and "test-anahtar" not in json.dumps(d), "anahtar sızmamalı"
+
+
+def test_strata_yoksa_eski_modlara_duser(monkeypatch):
+    """`FMS200_STRATA_URL` yoksa dal hiç devreye girmez (Ece'nin kopyası böyle çalışır)."""
+    monkeypatch.setattr(sh, "STRATA_URL", "")
+    assert sh.strata_var() is False
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    assert sh.uc()["mod"] == "ev"
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: False)
+    assert sh.uc()["mod"] == "yerel"
+    # env var ama uç kapalı → yine ev/yerel'e düşer (okulda sohbet susmaz)
+    monkeypatch.setattr(sh, "STRATA_URL", "http://192.168.1.105:8080")
+    monkeypatch.setattr(sh, "strata_var", lambda *a, **k: False)
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: True)
+    assert sh.uc()["mod"] == "ev"
+
+
+def test_elle_modu_butce_alanlarini_tasir(monkeypatch):
+    """REGRESYON: elle modu `uc()` eksik sözlük döndürüyordu → `sor()` `butce_kr`da KeyError
+    veriyordu (ölçüm yolu kırıktı). Tüm modlar aynı alanları taşır."""
+    monkeypatch.setenv("FMS200_CHAT_URL", "http://127.0.0.1:11434")
+    u = sh.uc()
+    assert u["mod"] == "elle"
+    for alan in ("butce_kr", "dilim_kr", "dilim_sayisi", "sec_max", "keep_alive", "api"):
+        assert alan in u, f"elle modunda {alan} eksik"
+
+
+def test_openai_istemi_strata_bicimi_ve_normalizasyon(monkeypatch):
+    """strata ölçümü (18 Kas): OpenAI-uyumlu uç; `tools` kabul eder, `timings.predicted_n/ms`
+    döndürür ve düşünmeyi `chat_template_kwargs.enable_thinking` ile kapatır (düz alan yok sayılıyor)."""
+    yakalanan: dict = {}
+
+    class _R:
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": "4", "reasoning_content": "kısa muhakeme"}}],
+                "usage": {"completion_tokens": 2},
+                "timings": {"predicted_n": 40, "predicted_ms": 500}}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=None):
+        yakalanan["url"] = req.full_url
+        yakalanan["govde"] = json.loads(req.data.decode())
+        yakalanan["baslik"] = dict(req.headers)
+        return _R()
+
+    monkeypatch.setattr(sh.urllib.request, "urlopen", urlopen)
+    d = sh._openai_chat([{"role": "user", "content": "x"}], "qwen3.8-flash-next", 100, 10,
+                        "http://192.168.1.105:8080", anahtar="k", araclar=True, think=False)
+    assert yakalanan["url"].endswith("/v1/chat/completions")
+    assert yakalanan["baslik"].get("Authorization") == "Bearer k"
+    assert yakalanan["govde"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert yakalanan["govde"]["tools"][0]["function"]["name"] == "arastir_arsiv"
+    assert d["message"]["content"] == "4" and d["message"]["thinking"] == "kısa muhakeme"
+    assert d["eval_count"] == 40 and d["total_duration"] == 500_000_000
+
+
+def test_openai_arac_desteklemeyen_ucta_aracsiz_devam(monkeypatch):
+    """OpenAI-uyumlu uç 400 'tools are not supported' derse: bir kez denenir, araçsız devam edilir."""
+    sh._ARAC_DESTEK.clear()
+    cagri = {"aracli": []}
+
+    def taklit(mesajlar, model, en_fazla, timeout, url, anahtar="", araclar=False, think=False):
+        cagri["aracli"].append(araclar)
+        if araclar:
+            return {"_hata": "HTTP Error 400: tools are not supported", "_destek_yok": True}
+        return {"message": {"content": "araçsız [FMS200_Z, sayfa 1]"}, "eval_count": 5,
+                "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_openai_chat", taklit)
+    monkeypatch.setenv("FMS200_CHAT_URL", "http://192.168.1.105:8080/v1")   # /v1 → api otomatik "openai"
+    monkeypatch.setenv("FMS200_CHAT_MODEL", "openai-arac-yok:1b")
+    m = sh.model_sor("soru", "bağlam", db=appmod.DB, araclar=True)
+    assert m["hata"] is None and "araçsız" in m["yanit"]
+    assert cagri["aracli"] == [True, False]
+
+
+def test_openai_arac_sonucu_tool_call_id_tasir(monkeypatch):
+    """OpenAI protokolü `tool` mesajında `tool_call_id` şart koşar; yoksa ikinci tur 400 olur."""
+    sh._ARAC_DESTEK.clear()
+    gorulen: dict = {}
+
+    def taklit(mesajlar, model, en_fazla, timeout, url, anahtar="", araclar=False, think=False):
+        gorulen["mesajlar"] = [dict(m) for m in mesajlar]
+        if not any(m.get("role") == "tool" for m in mesajlar):
+            return {"message": {"content": "", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "arastir_arsiv", "arguments": json.dumps({"sorgu": "GRAFCET"})}}]}}
+        return {"message": {"content": "yanıt [FMS200_Z, sayfa 1]"}, "eval_count": 3,
+                "total_duration": 1_000_000_000}
+
+    monkeypatch.setattr(sh, "_openai_chat", taklit)
+    monkeypatch.setenv("FMS200_CHAT_URL", "http://192.168.1.105:8080/v1")
+    monkeypatch.setenv("FMS200_CHAT_MODEL", "openai-id-test:1b")
+    m = sh.model_sor("kaç kayıt?", "bağlam", db=appmod.DB, araclar=True)
+    arac = [x for x in gorulen["mesajlar"] if x.get("role") == "tool"]
+    assert arac and arac[0]["tool_call_id"] == "call_1"
+    assert "yanıt" in m["yanit"]

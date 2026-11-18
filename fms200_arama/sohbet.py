@@ -11,7 +11,12 @@ Ortam değişkenleri (uç seçimi — kullanıcı kararı 14 Eki 2026):
                  (ölçüm: `think=true` 81–240 sn ve kesik/boş yanıt; `think=false` 0,2–15,7 sn ve 15/15).
                  `FMS200_CHAT_THINK=1` ile açılır — o zaman bütçe otomatik 8000'e çıkar.
   **EV AĞI YOK** → yerel küçük model (`gemma3:4b`) · think kapalı · 4096 bağlam (8 GB makine şartı).
-  FMS200_CHAT_URL açıkça verilirse o kullanılır (ölçüm/deneme) — "elle" modu.
+  **BİZİM KOPYA (geliştirme/test)** → `FMS200_STRATA_URL` verilirse Precision 5820'deki **strata**
+                 (`192.168.1.105:8080` · `qwen3.8-flash-next` · OpenAI-uyumlu, 262K bağlam) kullanılır;
+                 anahtar `FMS200_STRATA_KEY` ya da `~/.config/aikon/strata-api-key` (18 Kas 2026).
+                 **Ece'nin kopyasında bu değişken yok → dal hiç devreye girmez.**
+  FMS200_CHAT_URL açıkça verilirse o kullanılır (ölçüm/deneme) — "elle" modu; URL `/v1` ile bitiyorsa
+  ya da `FMS200_CHAT_API=openai` verilirse OpenAI-uyumlu istemci kullanılır.
   FMS200_EV_URL / FMS200_EV_MODEL / FMS200_YEREL_URL / FMS200_YEREL_MODEL ile değiştirilebilir;
   FMS200_CHAT_THINK=1/0, FMS200_CHAT_CTX (0 = sınır yok), FMS200_CHAT_MAX, FMS200_CHAT_TIMEOUT.
 
@@ -145,6 +150,12 @@ EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11434")          #
 EV_MODEL = os.environ.get("FMS200_EV_MODEL", "qwen3.6:35b-a3b-coding-mtp-q4_K_M")
 YEREL_URL = os.environ.get("FMS200_YEREL_URL", "http://127.0.0.1:11434")
 YEREL_MODEL = os.environ.get("FMS200_YEREL_MODEL", "gemma3:4b")
+# Bizim kopyanın geliştirme/test ucu (18 Kas 2026, kullanıcı kararı): Precision 5820'deki strata.
+# OpenAI-uyumlu (/v1/chat/completions), 262K bağlam, model `qwen3.8-flash-next`. Gömme ucu YOKTUR
+# (`/v1/embeddings` → 404; ölçüldü) → gömme yerel `nomic-embed-text` ile yapılır.
+STRATA_URL = os.environ.get("FMS200_STRATA_URL", "").rstrip("/")
+STRATA_MODEL = os.environ.get("FMS200_STRATA_MODEL", "qwen3.8-flash-next")
+_STRATA_ONBELLEK: dict = {"zaman": 0.0, "var": False}
 _EV_ONBELLEK: dict = {"zaman": 0.0, "var": False}
 _BOS_UYARI = ("(Model bu turda yanıt üretmedi — düşünme bütçesini tüketti. Soruyu kısaltıp "
               "tekrar deneyin.)")
@@ -164,38 +175,93 @@ def _tcp_acik(url: str, timeout: float = 1.5) -> bool:
     u = urlsplit(url)
     if not u.hostname:
         return False
+    port = u.port or (443 if u.scheme == "https" else 11434)
     try:
-        with socket.create_connection((u.hostname, u.port or 11434), timeout=timeout):
+        with socket.create_connection((u.hostname, port), timeout=timeout):
             return True
     except OSError:
         return False
 
 
+def _erisim(url: str, onbellek: dict, ttl: float = 60.0) -> bool:
+    """Uç erişilebilir mi — **60 sn önbellek** (istek başına gecikme olmasın)."""
+    simdi = time.time()
+    if simdi - onbellek.get("zaman", 0.0) < ttl:
+        return bool(onbellek.get("var"))
+    var = _tcp_acik(url)
+    onbellek.update({"zaman": simdi, "var": var})
+    return var
+
+
 def ev_agi_var(ttl: float = 60.0) -> bool:
     """Ev ağında mıyız: ECE_PC'nin ucu erişilebilir mi? (60 sn önbellek → istek başına gecikme yok)"""
-    simdi = time.time()
-    if simdi - _EV_ONBELLEK["zaman"] < ttl:
-        return _EV_ONBELLEK["var"]
-    var = _tcp_acik(EV_URL)
-    _EV_ONBELLEK.update({"zaman": simdi, "var": var})
-    return var
+    return _erisim(EV_URL, _EV_ONBELLEK, ttl)
+
+
+def strata_var(ttl: float = 60.0) -> bool:
+    """Bizim geliştirme/test ucu (strata) erişilebilir mi? `FMS200_STRATA_URL` yoksa **hiç** denenmez."""
+    if not STRATA_URL:
+        return False
+    return _erisim(STRATA_URL, _STRATA_ONBELLEK, ttl)
+
+
+def strata_anahtari() -> str:
+    """strata API anahtarı: `FMS200_STRATA_KEY` ya da dosya (`FMS200_STRATA_KEY_FILE`, varsayılan
+    `~/.config/aikon/strata-api-key`). Yoksa boş dize — anahtarsız uçlar da çalışabilsin."""
+    acik = os.environ.get("FMS200_STRATA_KEY")
+    if acik:
+        return acik.strip()
+    yol = os.path.expanduser(os.environ.get("FMS200_STRATA_KEY_FILE", "~/.config/aikon/strata-api-key"))
+    try:
+        with open(yol, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _taban(**kw) -> dict:
+    """Her mod sözlüğünün taşıdığı ortak alanlar.
+
+    Neden: `uc()` dalı eksik alan döndürünce `sor()` `u["butce_kr"]`da **KeyError** veriyordu
+    (elle modu ölçüm yolunu kırıyordu) — tek taban sözlüğü bu sınıfı kapatır.
+    """
+    d = {"url": YEREL_URL, "model": YEREL_MODEL, "api": "ollama", "anahtar": "",
+         "think": os.environ.get("FMS200_CHAT_THINK", "0") == "1", "ctx": 4096, "en_fazla": 600,
+         "timeout": 120.0, "mod": "yerel", "keep_alive": "5m",
+         "butce_kr": 6500, "dilim_kr": 1300, "dilim_sayisi": 4, "sec_max": 5}
+    d.update(kw)
+    return d
 
 
 def uc() -> dict:
     """Aktif sohbet ucu.
 
-    {url, model, think, ctx, en_fazla, timeout, mod} · `ctx=None` → **bağlam sınırı gönderilmez**
-    (modelin sunucudaki ayarı geçerli). `mod`: "ev" | "yerel" | "elle".
+    {url, model, api, anahtar, think, ctx, en_fazla, timeout, mod, …} · `ctx=None` → **bağlam sınırı
+    gönderilmez** (modelin sunucudaki ayarı geçerli). `mod`: "elle" | "strata" | "ev" | "yerel";
+    `api`: "ollama" | "openai" (OpenAI-uyumlu uç → `/v1/chat/completions`).
     """
-    if os.environ.get("FMS200_CHAT_URL"):                        # açıkça verilen uç → dokunma
+    if os.environ.get("FMS200_CHAT_URL"):                        # 1) açıkça verilen uç → dokunma
+        url = os.environ["FMS200_CHAT_URL"].rstrip("/")
+        api = (os.environ.get("FMS200_CHAT_API")
+               or ("openai" if url.endswith("/v1") else "ollama"))
         ctx = _sayi("FMS200_CHAT_CTX", 4096)
-        return {"url": os.environ["FMS200_CHAT_URL"].rstrip("/"),
-                "model": os.environ.get("FMS200_CHAT_MODEL", YEREL_MODEL),
-                "think": os.environ.get("FMS200_CHAT_THINK", "0") == "1",
-                "ctx": (ctx if ctx > 0 else None),
-                "en_fazla": _sayi("FMS200_CHAT_MAX", 600),
-                "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "elle"}
-    if ev_agi_var():                                             # EV: büyük model, bağlam sınırı yok
+        return _taban(url=url, model=os.environ.get("FMS200_CHAT_MODEL", YEREL_MODEL), api=api,
+                      anahtar=strata_anahtari() if api == "openai" else "",
+                      ctx=(ctx if ctx > 0 else None),
+                      en_fazla=_sayi("FMS200_CHAT_MAX", 600),
+                      timeout=float(_sayi("FMS200_CHAT_TIMEOUT", 120)), mod="elle")
+    if strata_var():                                             # 2) bizim kopya: geliştirme/test
+        # Bağlam sunucuda sabit (262K) → `ctx` gönderilmez. Bütçe ev moduyla aynı: büyük model,
+        # uzun kaynak dilimleri anlamlı (MODUL_LISTESI tablosu tek dilime sığmıyordu).
+        return _taban(url=STRATA_URL, model=os.environ.get("FMS200_STRATA_MODEL", STRATA_MODEL),
+                      api="openai", anahtar=strata_anahtari(), ctx=None,
+                      en_fazla=_sayi("FMS200_CHAT_MAX", 4000),
+                      timeout=float(_sayi("FMS200_CHAT_TIMEOUT", 600)), mod="strata",
+                      butce_kr=_sayi("FMS200_CHAT_BUTCE", 24000),
+                      dilim_kr=_sayi("FMS200_CHAT_DILIM", 2000),
+                      dilim_sayisi=_sayi("FMS200_CHAT_DILIM_SAYI", 6),
+                      sec_max=_sayi("FMS200_CHAT_SEC", 8))
+    if ev_agi_var():                                             # 3) EV: büyük model, bağlam sınırı yok
         # ÖLÇÜM (14 Eki, 35B, aynı soru): `think=true` + 3000 token → 81 sn BOŞ, 98 sn 31 kr KESİK,
         # 240 sn dolgun; `think=true` + 8000 token → 116,6 sn (2 dk) ve muhakeme 5904 kr.
         # `think=false` → 0,2–15,7 sn, 15/15. Bu yüzden ev modunda varsayılan **kapalı**; açmak
@@ -215,29 +281,28 @@ def uc() -> dict:
         # YANLIŞTI: sebep ECE_PC'de GPU'yu kullanan başka işti (ECE oyun oynuyordu). Ders:
         # paylaşılan makinede tek ölçümle hüküm verilmez — önce makinenin boş olduğu doğrulanır.
         ctx_ayar = _sayi("FMS200_CHAT_CTX", 0)          # 0 = sınır yok (varsayılan)
-        return {"url": EV_URL, "model": os.environ.get("FMS200_EV_MODEL", EV_MODEL),
-                "think": think, "ctx": (ctx_ayar if ctx_ayar > 0 else None),
-                "en_fazla": _sayi("FMS200_CHAT_MAX", 8000 if think else 4000),
-                "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 600)), "mod": "ev",
-                # Bağlamı SICAK tut: ölçüldü — model boşaldıktan sonra ilk soru 179,9 sn / 2,7 tok/s
-                # (22 GB yeniden yükleme), sıcakken 5,1 sn / 66,2 tok/s. "Donma" görüntüsünün asıl kaynağı.
-                "keep_alive": os.environ.get("FMS200_CHAT_KEEP_ALIVE", "30m"),
-                "butce_kr": _sayi("FMS200_CHAT_BUTCE", 24000),
-                "dilim_kr": _sayi("FMS200_CHAT_DILIM", 2000),
-                "dilim_sayisi": _sayi("FMS200_CHAT_DILIM_SAYI", 6),
-                "sec_max": _sayi("FMS200_CHAT_SEC", 8)}
-    return {"url": YEREL_URL,
-            "model": (os.environ.get("FMS200_CHAT_MODEL")            # ölçüm/test yolu: tek model adı yeter
-                      or os.environ.get("FMS200_YEREL_MODEL") or YEREL_MODEL),
-            "think": os.environ.get("FMS200_CHAT_THINK", "0") == "1",
-            "ctx": _sayi("FMS200_CHAT_CTX", 4096) or None,
-            "en_fazla": _sayi("FMS200_CHAT_MAX", 600),
-            "timeout": float(_sayi("FMS200_CHAT_TIMEOUT", 120)), "mod": "yerel",
-            "keep_alive": os.environ.get("FMS200_CHAT_KEEP_ALIVE", "5m"),
-            "butce_kr": _sayi("FMS200_CHAT_BUTCE", 6500),
-            "dilim_kr": _sayi("FMS200_CHAT_DILIM", 1300),
-            "dilim_sayisi": _sayi("FMS200_CHAT_DILIM_SAYI", 4),
-            "sec_max": _sayi("FMS200_CHAT_SEC", 5)}
+        return _taban(url=EV_URL, model=os.environ.get("FMS200_EV_MODEL", EV_MODEL),
+                      think=think, ctx=(ctx_ayar if ctx_ayar > 0 else None),
+                      en_fazla=_sayi("FMS200_CHAT_MAX", 8000 if think else 4000),
+                      timeout=float(_sayi("FMS200_CHAT_TIMEOUT", 600)), mod="ev",
+                      # Bağlamı SICAK tut: ölçüldü — model boşaldıktan sonra ilk soru 179,9 sn / 2,7 tok/s
+                      # (22 GB yeniden yükleme), sıcakken 5,1 sn / 66,2 tok/s. "Donma" görüntüsünün asıl kaynağı.
+                      keep_alive=os.environ.get("FMS200_CHAT_KEEP_ALIVE", "30m"),
+                      butce_kr=_sayi("FMS200_CHAT_BUTCE", 24000),
+                      dilim_kr=_sayi("FMS200_CHAT_DILIM", 2000),
+                      dilim_sayisi=_sayi("FMS200_CHAT_DILIM_SAYI", 6),
+                      sec_max=_sayi("FMS200_CHAT_SEC", 8))
+    return _taban(url=YEREL_URL,
+                  model=(os.environ.get("FMS200_CHAT_MODEL")      # ölçüm/test yolu: tek model adı yeter
+                         or os.environ.get("FMS200_YEREL_MODEL") or YEREL_MODEL),
+                  ctx=_sayi("FMS200_CHAT_CTX", 4096) or None,
+                  en_fazla=_sayi("FMS200_CHAT_MAX", 600),
+                  timeout=float(_sayi("FMS200_CHAT_TIMEOUT", 120)), mod="yerel",
+                  keep_alive=os.environ.get("FMS200_CHAT_KEEP_ALIVE", "5m"),
+                  butce_kr=_sayi("FMS200_CHAT_BUTCE", 6500),
+                  dilim_kr=_sayi("FMS200_CHAT_DILIM", 1300),
+                  dilim_sayisi=_sayi("FMS200_CHAT_DILIM_SAYI", 4),
+                  sec_max=_sayi("FMS200_CHAT_SEC", 5))
 
 
 def cfg() -> tuple[str, str, int, int, float]:
@@ -513,6 +578,68 @@ def _ollama_chat(mesajlar: list[dict], model: str, ctx: int | None, en_fazla: in
         return {"_hata": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
+def _openai_chat(mesajlar: list[dict], model: str, en_fazla: int, timeout: float, url: str,
+                 anahtar: str = "", araclar: bool = False, think: bool = False) -> dict:
+    """**OpenAI-uyumlu** uç (`/v1/chat/completions`) — yanıt ollama biçimine NORMALLEŞTİRİLİR.
+
+    Neden: bizim kopya geliştirme/test için strata'yı (Precision 5820) kullanır; strata ollama
+    değil OpenAI protokolü konuşuyor. Normalizasyon sayesinde `model_sor` tek kod yolu kalır.
+
+    Ölçüldü (18 Kas 2026, strata · qwen3.8-flash-next):
+      · `tools` kabul ediliyor, `tool_calls` OpenAI biçiminde dönüyor (`arguments` JSON **metni**),
+      · yanıtta `timings.predicted_n / predicted_ms` var → tok/s buradan hesaplanır,
+      · **düşünme varsayılan AÇIK** → `chat_template_kwargs.enable_thinking=false` gönderilir
+        (düz `enable_thinking` alanı yok sayılıyor),
+      · `/v1/embeddings` **yok** (404) → gömme ayrı (yerel `nomic-embed-text`).
+    """
+    taban = url.rstrip("/")
+    kok = taban if taban.endswith("/v1") else taban + "/v1"
+    govde = {"model": model, "messages": mesajlar, "stream": False,
+             "temperature": 0.2, "max_tokens": en_fazla,
+             "chat_template_kwargs": {"enable_thinking": bool(think)}}
+    if araclar:
+        govde["tools"] = ARACLAR
+    basliklar = {"Content-Type": "application/json"}
+    if anahtar:
+        basliklar["Authorization"] = f"Bearer {anahtar}"
+    req = urllib.request.Request(f"{kok}/chat/completions", data=json.dumps(govde).encode("utf-8"),
+                                 headers=basliklar)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            g = e.read().decode("utf-8", "replace")
+        except Exception:                                   # pragma: no cover
+            g = ""
+        kucuk = g.lower()
+        destek_yok = e.code == 400 and "tool" in kucuk and "support" in kucuk
+        return {"_hata": f"HTTP Error {e.code}: {g[:120]}", "_destek_yok": destek_yok}
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+        return {"_hata": f"{type(e).__name__}: {str(e)[:120]}"}
+    secim = (d.get("choices") or [{}])[0] or {}
+    mesaj = secim.get("message") or {}
+    zaman = d.get("timings") or {}
+    kullanim = d.get("usage") or {}
+    n = (zaman.get("predicted_n") or kullanim.get("completion_tokens") or 0)
+    ms = zaman.get("predicted_ms") or 0
+    return {"message": {"content": mesaj.get("content") or "",
+                        "tool_calls": mesaj.get("tool_calls") or [],
+                        "thinking": mesaj.get("reasoning_content") or mesaj.get("reasoning") or ""},
+            "eval_count": int(n), "total_duration": int(float(ms) * 1e6), "_api": "openai"}
+
+
+def _sohbet_istegi(mesajlar: list[dict], model: str, ctx: int | None, en_fazla: int, timeout: float,
+                   url: str, araclar: bool = False, think: bool = False, keep_alive: str = "5m",
+                   api: str | None = None, anahtar: str = "") -> dict:
+    """Tek giriş noktası: `api="openai"` → OpenAI-uyumlu istemci, aksi hâlde ollama `/api/chat`."""
+    if (api or uc().get("api") or "ollama") == "openai":
+        return _openai_chat(mesajlar, model, en_fazla, timeout, url,
+                            anahtar=anahtar or strata_anahtari(), araclar=araclar, think=think)
+    return _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclar,
+                        think=think, keep_alive=keep_alive)
+
+
 _ARAC_DESTEK: dict[str, bool] = {}          # model → araç destekliyor mu (bir kez ölçülür)
 
 
@@ -570,6 +697,8 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     timeout = timeout or u["timeout"]
     think = u["think"]
     keep_alive = u.get("keep_alive", "5m")       # ev modunda 30m: model boşalmasın (179,9 sn → 5,1 sn ölçümü)
+    api = u.get("api") or "ollama"              # "openai" → strata/llama.cpp ucu, "ollama" → /api/chat
+    anahtar = u.get("anahtar", "")
     kullanici = (f"GÖREV: {soru}\n\nMEVCUT İÇERİK:\n{baglam}" if gorev
                  else f"SORU: {soru}\n\nKAYNAKLAR:\n{baglam}")
     mesajlar: list[dict] = [{"role": "system", "content": SISTEM_GOREV if gorev else SISTEM}]
@@ -586,14 +715,14 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     d = {}
     for tur in range(max(1, arac_tur + 1)):
         araclari_gonder = kullan_arac and tur < arac_tur
-        d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclari_gonder,
-                         think=think, keep_alive=keep_alive)
+        d = _sohbet_istegi(mesajlar, model, ctx, en_fazla, timeout, url, araclar=araclari_gonder,
+                           think=think, keep_alive=keep_alive, api=api, anahtar=anahtar)
         if d.get("_destek_yok"):
             _ARAC_DESTEK[model] = False                     # modele not düş, tekrar denemeyelim
             kullan_arac = False
             araclari_gonder = False
-            d = _ollama_chat(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
-                             think=think, keep_alive=keep_alive)
+            d = _sohbet_istegi(mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
+                               think=think, keep_alive=keep_alive, api=api, anahtar=anahtar)
         elif araclari_gonder:
             _ARAC_DESTEK.setdefault(model, True)            # araç kabul edildi
         if d.get("_hata"):
@@ -621,8 +750,10 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
                 args = {"sorgu": str(args)}
             if ad == "arastir_arsiv":
                 arac_sorgulari.append(str(args.get("sorgu") or "")[:80])
-            mesajlar.append({"role": "tool", "content": _arac_calistir(db, ad, args),
-                             "tool_name": ad})
+            arac_mesaji = {"role": "tool", "content": _arac_calistir(db, ad, args), "tool_name": ad}
+            if c.get("id"):                                  # OpenAI-uyumlu uçlar `tool_call_id` ister
+                arac_mesaji["tool_call_id"] = c["id"]
+            mesajlar.append(arac_mesaji)
     SON_HATA = None
     msg = d.get("message") or {}
     ham = msg.get("content") or ""
@@ -634,8 +765,8 @@ def model_sor(soru: str, baglam: str, url: str | None = None, model: str | None 
     # `think=false` ile aynı soru 0,2–15,7 sn ve 15/15. (Araç-400 yedeğiyle aynı desen.)
     think_yedek = False
     if think and len(ham.strip()) < _KISA_YANIT:
-        d2 = _ollama_chat(bas_mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
-                          think=False, keep_alive=keep_alive)
+        d2 = _sohbet_istegi(bas_mesajlar, model, ctx, en_fazla, timeout, url, araclar=False,
+                            think=False, keep_alive=keep_alive, api=api, anahtar=anahtar)
         ham2 = (d2.get("message") or {}).get("content") or ""
         if not d2.get("_hata") and len(ham2.strip()) > len(ham.strip()):
             d, ham, think_yedek = d2, ham2, True
@@ -822,6 +953,9 @@ def durum() -> dict:
     u = uc()
     return {"url": u["url"], "model": u["model"], "ctx": u["ctx"], "en_fazla": u["en_fazla"],
             "think": u["think"], "mod": u["mod"], "ev_agi": ev_agi_var(),
+            # `api`: "ollama" | "openai" · `anahtar_var`: anahtar YALNIZ varlığıyla raporlanır (sızmasın)
+            "api": u.get("api", "ollama"), "anahtar_var": bool(u.get("anahtar")),
+            "strata": bool(STRATA_URL), "strata_agi": strata_var(),
             "butce_kr": u["butce_kr"], "dilim_kr": u["dilim_kr"], "dilim_sayisi": u["dilim_sayisi"],
             "sec_max": u["sec_max"], "keep_alive": u["keep_alive"],
             "son_hata": SON_HATA, "hazir": SON_HATA is None,

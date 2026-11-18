@@ -49,8 +49,19 @@ jenerik dossiye freni) → sayfa **metninden** dilimler → model → atıflı y
 
 | Ortam | Uç · model | think | Bağlam |
 |---|---|---|---|
-| **Ev ağında** (ECE_PC erişilebilir) | `192.168.1.26:11435` · `qwen3.6:35b-a3b-coding-mtp-q4_K_M` | **kapalı** (ölçüm: açıkken 81–240 sn ve boş/kesik yanıt; `FMS200_CHAT_THINK=1` ile açılır) | **sınır yok** (sunucudaki model ayarı) |
+| **Geliştirme/test — bizim kopya** (`FMS200_STRATA_URL` verilirse) | `192.168.1.105:8080` (strata, Precision 5820) · `qwen3.8-flash-next` | kapalı (`chat_template_kwargs.enable_thinking=false`) | **sınır yok** (sunucuda 262K) |
+| **Ev ağında** (ECE_PC erişilebilir) | `192.168.1.26:11434` · `qwen3.6:35b-a3b-coding-mtp-q4_K_M` | **kapalı** (ölçüm: açıkken 81–240 sn ve boş/kesik yanıt; `FMS200_CHAT_THINK=1` ile açılır) | **sınır yok** (sunucudaki model ayarı) |
 | **Ev ağı yok (okul)** | yerel `gemma3:4b` | kapalı | 4096 |
+
+> **Port notu (1 Kas 2026):** ECE_PC'de ikinci Ollama örneği (11435) kalktı → sohbet ucu **11434**.
+> Doğrulama: makine açıkken `nc -z 192.168.1.26 11434`.
+>
+> **Strata (18 Kas 2026, kullanıcı kararı):** **bizim kopya** geliştirme ve testlerde strata'yı kullanır
+> — OpenAI-uyumlu `/v1/chat/completions`, `tools` çalışıyor, yanıtta `timings` var. Ölçüm (18 Kas):
+> "FMS-203 hangi istasyonda" **7,6 sn · 49 tok/s**, "modül listesi" **14,8 sn · 80 tok/s**,
+> araç çağrılı soru **17,2 sn · 68 tok/s**. Strata'nın **gömme ucu yoktur** (`/v1/embeddings` → 404):
+> gömme yerel `nomic-embed-text` ile yapılır. Kolay yol: `scripts/dev-strata.sh`.
+> Ece'nin kopyasında `FMS200_STRATA_URL` yok → bu dal hiç devreye girmez.
 
 > **Ölçüm notu (15 Eki, kontrollü A/B, makine boş):** "bağlam sınırı koymak hızı artırır" iddiası
 > **yanlıştı** — sınırsız **74,3 tok/s** ↔ `num_ctx=16384` **67,7 tok/s** (3'er tekrar). Ayrıca her ctx
@@ -69,7 +80,7 @@ jenerik dossiye freni) → sayfa **metninden** dilimler → model → atıflı y
   (2) model eksik dese de aracı çağırmazsa kod **yönlendirmesiz ek arama** yapar — **yalnız yeni belge
   geldiyse** ikinci model çağrısı yapılır (ölçüldü: yoksa boşuna ~28 sn); (3) atıf koymazsa kaynakları
   kod ekler.
-- Durum ucunda görünür: `/api/status → sohbet.{mod, think, ev_agi, ctx, en_fazla, arac_destek}`.
+- Durum ucunda görünür: `/api/status → sohbet.{mod, api, model, think, ev_agi, strata_agi, anahtar_var, ctx, en_fazla}`.
 
 ### Ölçülmüş model tablosu (sıkı ölçüt: zorunlu/any/yasak + bağlamda **tanınan** atıf)
 
@@ -127,8 +138,11 @@ Model yoksa **arama bozulmaz** — `/api/ask` `ok:false` + kaynak listesi döner
 |---|---|---|
 | `FMS200_ROOT` | — | arşiv kökü |
 | `FMS200_EMBED_URL` / `FMS200_EMBED_MODEL` | — / `nomic-embed-text` | gömme sunucusu; yoksa hashing |
-| `FMS200_CHAT_URL` / `FMS200_CHAT_MODEL` | *(ağ ölçümü)* / `gemma3:4b` | açıkça verilirse "elle" modu |
-| `FMS200_EV_URL` / `FMS200_EV_MODEL` | `http://192.168.1.26:11435` / 35B coding | **ev ağında** kullanılır |
+| `FMS200_CHAT_URL` / `FMS200_CHAT_MODEL` | *(ağ ölçümü)* / `gemma3:4b` | açıkça verilirse "elle" modu; URL `/v1` ile biterse **OpenAI-uyumlu** istemci |
+| `FMS200_STRATA_URL` / `FMS200_STRATA_MODEL` | *(boş)* / `qwen3.8-flash-next` | **bizim kopya**: geliştirme/test ucu (strata); boşsa dal kapalı |
+| `FMS200_STRATA_KEY` / `FMS200_STRATA_KEY_FILE` | — / `~/.config/aikon/strata-api-key` | strata anahtarı (yalnız `Authorization` başlığında kullanılır, `/api/status`'ta **sızmaz**) |
+| `FMS200_CHAT_API` | URL'den çıkarılır | `openai` \| `ollama` — istemci seçimini zorla |
+| `FMS200_EV_URL` / `FMS200_EV_MODEL` | `http://192.168.1.26:11434` / 35B coding | **ev ağında** kullanılır |
 | `FMS200_YEREL_URL` / `FMS200_YEREL_MODEL` | `http://127.0.0.1:11434` / `gemma3:4b` | **ev ağı yoksa** |
 | `FMS200_CHAT_THINK` | `0` (kapalı) | **Ölçüldü:** açıkken aynı soru 81–240 sn ve boş/kesik yanıt; kapalıyken 0,2–15,7 sn ve 15/15. Açılırsa bütçe otomatik 8000 |
 | `FMS200_CHAT_CTX` | `0` = **sınır yok** (varsayılan) | ev modunda **gönderilmez**; verilirse `num_ctx` olarak gider (kontrollü A/B: sınır koymak hızı **artırmıyor**) |
