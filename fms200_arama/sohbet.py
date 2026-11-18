@@ -6,7 +6,7 @@ yanıt + `[belge, sayfa N]` atıfları. Görev cümlelerinde ("... dosyasını y
 üretir; diske yazmaz — kullanıcı düzenleyicide onaylayıp kaydeder.
 
 Ortam değişkenleri (uç seçimi — kullanıcı kararı 14 Eki 2026):
-  **EV AĞINDA**  → ECE_PC `192.168.1.26:11435` (2×RTX 4060 Ti **16 GB = 32 GB VRAM**) ·
+  **EV AĞINDA**  → ECE_PC `192.168.1.26:11434` (2×RTX 4060 Ti **16 GB = 32 GB VRAM**) ·
                  `qwen3.6:35b-a3b-coding-mtp-q4_K_M` · bağlam sınırı yok · **`think` varsayılan KAPALI**
                  (ölçüm: `think=true` 81–240 sn ve kesik/boş yanıt; `think=false` 0,2–15,7 sn ve 15/15).
                  `FMS200_CHAT_THINK=1` ile açılır — o zaman bütçe otomatik 8000'e çıkar.
@@ -141,7 +141,7 @@ _LISTE_RE = re.compile(r"mod(ü|u)l\s*(listesi|listen|isimleri|adları)|hangi\s+
                         r"|modul[_ ]?listesi|modül[_ ]?listesi", re.I)
 
 # --- Uç/model seçimi (kullanıcı kararı 14 Eki 2026) -------------------------------------------
-EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11435")          # ECE_PC · büyük modeller
+EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11434")          # ECE_PC · büyük modeller (port 01.11'de 11435→11434)
 EV_MODEL = os.environ.get("FMS200_EV_MODEL", "qwen3.6:35b-a3b-coding-mtp-q4_K_M")
 YEREL_URL = os.environ.get("FMS200_YEREL_URL", "http://127.0.0.1:11434")
 YEREL_MODEL = os.environ.get("FMS200_YEREL_MODEL", "gemma3:4b")

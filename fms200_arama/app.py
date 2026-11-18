@@ -213,6 +213,7 @@ def api_history(doc: str, limit: int = 20):
         return {"doc": doc, "commits": [], "hata": str(e)[:160]}
 
 
+@app.get("/health")
 @app.get("/api/status")
 def api_status():
     """İndeks durumu: arka uç, kayıt sayısı, DB yaşı, **çalışma anındaki** gömme arka ucu, sohbet."""

@@ -91,6 +91,8 @@ def test_md_render(client, tmp_path):
 def test_api_status(client):
     j = client.get("/api/status").json()
     assert j["kayit"] >= 1 and "embed" in j and "bayat" in j
+    h = client.get("/health")
+    assert h.status_code == 200 and h.json()["kayit"] == j["kayit"]
 
 
 def test_api_label_ve_arama(client):
