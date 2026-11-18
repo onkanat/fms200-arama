@@ -144,6 +144,13 @@ _LISTE_RE = re.compile(r"mod(ü|u)l\s*(listesi|listen|isimleri|adları)|hangi\s+
                         r"|mod(ü|u)lleri\s*(say|listele|yaz|göster)|istasyon\s*listesi|listeyi\s*(yaz|incele|tamamla)"
                         r"|liste\s*(eksik|tamamla)|tam\s*listesi|d(ö|o)k(ü|u)man(ı|i)?\s*(incele|oku|yaz|görüntüle|aç)"
                         r"|modul[_ ]?listesi|modül[_ ]?listesi", re.I)
+# Liste niyetinin **zorunlu yönlendirme** alt kümesi: yalnız liste/istasyon sayma soruları.
+# Ölçüldü (18 Kas, 1361 kayıtlı DB): "modül listesi" sorgusunda MODUL_LISTESI ancak **k=12, 12. sırada**
+# geliyor; topk=5'te havuza hiç girmiyor → model tabloyu ES manuelin içindekinden kurup **5 satırda**
+# (FMS-201…205, 211 yok) kalıyor ve "eksik" de demiyordu. Puanlama yetmez: belge havuza girmeli.
+_LISTE_ZORLA_RE = re.compile(r"mod(ü|u)l\s*(listesi|listen|isimleri|adları)|hangi\s+mod(ü|u)l|ka(ç|c)\s+mod(ü|u)l"
+                             r"|mod(ü|u)lleri\s*(say|listele|yaz|göster)|istasyon\s*listesi|tam\s*listesi"
+                             r"|modul[_ ]?listesi|modül[_ ]?listesi", re.I)
 
 # --- Uç/model seçimi (kullanıcı kararı 14 Eki 2026) -------------------------------------------
 EV_URL = os.environ.get("FMS200_EV_URL", "http://192.168.1.26:11434")          # ECE_PC · büyük modeller (port 01.11'de 11435→11434)
@@ -423,6 +430,13 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
             for d in sorted(yon["dossiler"] & var):
                 if (d, None) not in zaten:
                     isabetler.insert(0, {"doc": d, "page": None, "onem_ek": 6})
+        # (1b) Liste niyeti: `MODUL_LISTESI` havuza **doğrudan** alınır (puanlama yetmiyor — ölçüm
+        # yukarıda). Yalnız liste/istasyon sorularında; "belgeyi incele" gibi geniş kalıplarda zorlanmaz.
+        if _LISTE_ZORLA_RE.search(q or "") and not doc:
+            zaten = {r["doc"] for r in isabetler}
+            if "MODUL_LISTESI" not in zaten and con.execute(
+                    "SELECT 1 FROM pages WHERE doc='MODUL_LISTESI' LIMIT 1").fetchone():
+                isabetler.insert(0, {"doc": "MODUL_LISTESI", "page": None, "onem_ek": 6})
         aday = []
         for r in isabetler:
             metin, etiket, gorsel = _sayfa_metni(con, r["doc"], r["page"])
@@ -463,7 +477,9 @@ def baglam_kur(db: str, q: str, doc: str | None = None, topk: int = 5,
                 break
             ust = 3 if a.get("yonlendirilmis") else tur      # yönlendirilen dossiyeden 3 dilim serbest
             if a["doc"] in (doc, "MODUL_LISTESI") and (doc or liste_niyeti):
-                ust = max(ust, 4)          # belge ADI verildiyse / liste niyetiyse: 4 dilim (tablo bütün gelsin)
+                # Belge adı verildiyse / liste niyetiyse 4 dilim; liste niyetinde TABLO TAM gelsin diye
+                # dilim tavanına kadar (ölçüldü 18 Kas: 4 dilimde tablo FMS-209'da kesiliyordu).
+                ust = max(ust, (dilim_sayisi if (liste_niyeti and not doc) else 4))
             if sayac.get(a["doc"], 0) >= ust:
                 continue
             if a["jenerik"] and jen >= jen_ust:

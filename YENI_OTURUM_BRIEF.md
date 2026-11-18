@@ -4,6 +4,23 @@
 > Bu dosya, temiz bir oturumun 800 mesaj okumadan işe devam edebilmesi için var.
 > (Güncelleme: 13 Eki 2026 — önceki FMS-200 oturumu arşive alındı, ayrıntı §"Devir durumu".)
 
+## 18 Kas 2026 — ARADAN SONRA: strata + liste yönlendirmesi (dev)
+- **Commit'ler:** `8cb9c82` (1.11'de yarım kalanlar: ECE_PC portu **11434**, `/health` ucu) ·
+  `927b74a` (strata istemcisi) · bu commit (liste niyeti zorunlu yönlendirme). Uzak `dev` hash'i doğrulandı.
+- **Bizim kopya geliştirme/test ucu = strata** (kullanıcı kararı 18 Kas): `FMS200_STRATA_URL=http://192.168.1.105:8080`
+  → `qwen3.8-flash-next` · OpenAI-uyumlu · `tools` çalışıyor · 262K bağlam. **Gömme strata'da YOK**
+  (`/v1/embeddings` 404, ölçüldü) → gömme yerel `nomic-embed-text`. Kolay yol: `scripts/dev-strata.sh`.
+  **Ece'nin kopyasında değişken yok → dal hiç devreye girmez.** `/api/status → sohbet.{mod:"strata",
+  api:"openai", strata_agi, anahtar_var}`.
+- **Ölçüm (18 Kas, canlı 8765):** "FMS-203 hangi istasyonda" **7,6 sn / 49 tok/s** · "modül listesi"
+  **9,2 sn / 91 tok/s (11/11 modül)** · araç çağrılı soru **17,2 sn / 68 tok/s**. Test: **103**.
+- **DÜZELTME — liste niyeti belgeyi havuza sokmuyordu:** 1361 kayıtlı DB'de `MODUL_LISTESI` topk=5'te
+  hiç yok (k=12'de **12. sırada**) → yanıt **5 satırda** (FMS-201…205) kalıyordu, 211 hiç geçmiyordu ve
+  model "eksik" de demiyordu. Artık liste niyetinde belge **doğrudan** alınır (`_LISTE_ZORLA_RE`);
+  bağlamda FMS-201…211 tam (3/6 dilim → belgenin tamamı, ≤6 dilim).
+- **Açık kalem:** Ece'den haber (1.11 kararının "1–2 hafta" penceresi doldu) · paket DB 1120 kayıt/139
+  etiket, yerel DB **1361/254** → yeni paket **ancak sürüm ilanıyla** ve **yeni adla**.
+
 ## ECE · Sohbet (RAG) + Okul senaryosu — 14 Eki 2026'da yazıldı, UÇ SEÇİMİ tamamlandı
 - **Plan + tüm ölçümler:** `~/MacAir/fms-200/arastirma/ECE_SOHBET_OKUL_PLANI.md` (§"Tur 4–7" en güncel:
   ölçüm düzenekleri aynı dizinde: `sohbet_olcum.py`, `sohbet_olcum2.py`, `sohbet_altin_set.json` (15 soru),
@@ -12,7 +29,7 @@
   **turuncu** = uydurma uyarısı) + atıfsız yanıta **koddan kaynak ekleme** + çok dilli sorgu açılımı
   (TR→EN+ES) + araç `arastir_arsiv` (iki çağrı biçimi de tanınır) + görev modu **taslak** (diske yazmaz).
 - **UÇ SEÇİMİ AĞ-DUYARLI (`uc()`, kullanıcı kararı 14 Eki):** `FMS200_CHAT_URL` verilmezse ev ağı ölçülür
-  (TCP + 60 sn önbellek): **ev ağında** → ECE_PC `192.168.1.26:11435` · `qwen3.6:35b-a3b-coding-mtp-q4_K_M` ·
+  (TCP + 60 sn önbellek): **ev ağında** → ECE_PC `192.168.1.26:11434` · `qwen3.6:35b-a3b-coding-mtp-q4_K_M` ·
   **think AÇIK** · **bağlam sınırı yok** (`num_ctx` gönderilmez) · bütçe 3000; **ev ağı yoksa** → yerel
   **`gemma3:4b`** · think kapalı · 4096. `/api/status → sohbet.{mod, think, ev_agi}`. **Ece hiçbir şey ayarlamaz.**
 - **Kural — `think=true` bütçesiz açılmaz:** ölçüldü, 600 token bütçede üretimin tamamı muhakemeye gitti ve

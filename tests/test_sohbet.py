@@ -739,3 +739,31 @@ def test_openai_arac_sonucu_tool_call_id_tasir(monkeypatch):
     arac = [x for x in gorulen["mesajlar"] if x.get("role") == "tool"]
     assert arac and arac[0]["tool_call_id"] == "call_1"
     assert "yanıt" in m["yanit"]
+
+
+def test_liste_niyeti_modul_listesini_zorla_baglama_alir(tmp_path, monkeypatch):
+    """ÖLÇÜLDÜ (18 Kas 2026, 1361 kayıtlı canlı DB): "modül listesi" sorusunda `MODUL_LISTESI`
+    arama sıralamasında ancak **k=12'de 12.** geliyordu; topk=5'te havuza hiç girmiyor, model
+    tabloyu ES manuelin içinden kurup **5 satırda** (FMS-201…205) kalıyor ve "eksik" de demiyordu.
+    Artık liste niyetinde belge **doğrudan** havuza alınır (aynı sınıf: modül kodu yönlendirmesi).
+    Geniş "belgeyi incele" kalıbında zorlanmaz.
+    """
+    root = os.path.join(str(tmp_path), "fms200")
+    durum = os.path.join(root, "durum")
+    os.makedirs(durum)
+    tablo = ("# Modül (istasyon) listesi\n\n| Kod | Ad |\n|---|---|\n"
+             + "".join(f"| FMS-{k} | istasyon {k - 200} |\n" for k in range(201, 212)))
+    open(os.path.join(durum, "MODUL_LISTESI.md"), "w", encoding="utf-8").write(tablo + "\n" + "dolgu " * 600)
+    for i in range(3):                                    # gürültü: sorgu terimlerini çok tekrar eder
+        open(os.path.join(durum, f"DECOY{i}.md"), "w", encoding="utf-8").write(
+            "modül listesi istasyon modülleri listele " * 250)
+    db = os.path.join(str(tmp_path), "l.db")
+    bi.build(root=root, db=db, verbose=False)
+    monkeypatch.setattr(sh, "ev_agi_var", lambda *a, **k: False)
+    b, kay, _ = sh.baglam_kur(db, "Modül listesini ver", butce_kr=8000, dilim_kr=2000,
+                              dilim_sayisi=6, sec_max=8)
+    assert "MODUL_LISTESI" in {k["doc"] for k in kay}, "liste niyetinde belge zorunlu girmeli"
+    assert "FMS-211" in b, "tablo sonuna kadar (FMS-211) gelmeli"
+    _, kay2, _ = sh.baglam_kur(db, "belgeyi incele", butce_kr=8000, dilim_kr=2000,
+                               dilim_sayisi=6, sec_max=8)
+    assert "MODUL_LISTESI" not in {k["doc"] for k in kay2}, "geniş kalıpta zorlanmamalı"
